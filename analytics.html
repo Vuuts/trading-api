@@ -531,8 +531,19 @@ window.addEventListener('load', function() {
         {id:'ma', label:'📈 Mabouncer',cls:'ma', accent:'#00ff88'},
       ];
 
+      var SESSION_TABS = {
+        orb: [{id:'all',label:'All'},{id:'Asia',label:'🌏 Asia'},{id:'NY',label:'🗽 NY'}],
+        sf:  [{id:'all',label:'All'},{id:'London',label:'🇬🇧 London'},{id:'London/NY',label:'⚡ London/NY'},{id:'NY',label:'🗽 NY'}],
+        ma:  [],
+      };
+
       var active  = TABS.find(function(t){return t.id===tab;});
-      var current = trades[tab];
+      var rawTrades = trades[tab];
+      var sesTabsRef = useState('all');
+      var sesTab=sesTabsRef[0], setSesTab=sesTabsRef[1];
+      var current = rawTrades && sesTab !== 'all'
+        ? rawTrades.filter(function(t){return t.session===sesTab;})
+        : rawTrades;
 
       function setTabTrades(data) {
         setTrades(function(s){var n=Object.assign({},s);n[tab]=data;return n;});
@@ -551,15 +562,39 @@ window.addEventListener('load', function() {
             )
           ),
           h('div',{className:'tabs'},TABS.map(function(t){
-            return h('button',{key:t.id,className:'tab '+t.cls+(tab===t.id?' on':''),onClick:function(){setTab(t.id);}},
+            return h('button',{key:t.id,className:'tab '+t.cls+(tab===t.id?' on':''),onClick:function(){setTab(t.id);setSesTab('all');}},
               t.label,
               trades[t.id] && h('span',{style:{fontSize:8,fontFamily:'IBM Plex Mono',color:t.accent,marginLeft:4}},trades[t.id].length+'T')
             );
           }))
         ),
+        SESSION_TABS[tab] && SESSION_TABS[tab].length > 0 && rawTrades && h('div',{style:{display:'flex',gap:4,padding:'0 24px',background:'var(--bg2)',borderBottom:'1px solid var(--border)'}},
+          SESSION_TABS[tab].map(function(s){
+            var isActive = sesTab===s.id;
+            return h('button',{
+              key:s.id,
+              onClick:function(){setSesTab(s.id);},
+              style:{
+                padding:'8px 16px',
+                fontSize:11,
+                fontWeight:600,
+                fontFamily:'IBM Plex Mono,monospace',
+                background:'none',
+                border:'none',
+                borderBottom: isActive ? '2px solid '+active.accent : '2px solid transparent',
+                color: isActive ? active.accent : '#4a5268',
+                cursor:'pointer',
+                transition:'all .15s',
+              }
+            }, s.label,
+            rawTrades && s.id !== 'all' && h('span',{style:{fontSize:9,marginLeft:4,color:'#4a5268'}},
+              rawTrades.filter(function(t){return t.session===s.id;}).length+'T'
+            ))
+          })
+        ),
         h('div',{className:'page'},
           current
-            ? h(Dashboard,{trades:current,accent:active.accent,name:active.label,onClear:clearTab,isOrb:tab==='orb',isSf:tab==='sf'})
+            ? h(Dashboard,{trades:current,accent:active.accent,name:active.label,onClear:clearTab,isOrb:tab==='orb'&&sesTab==='all',isSf:tab==='sf'&&sesTab==='all'})
             : h(PastePanel,{tab:tab,onLoad:setTabTrades})
         )
       );
