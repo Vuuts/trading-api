@@ -68,38 +68,32 @@ def trade_detail(trade_id):
         return jsonify({"ok": False, "error": str(e)}), 500
 
 # ─── SESSION TAGGER ──────────────────────────────────────────────────────────
+def utc_to_et_hour(open_time: str) -> int:
+    """Convert OANDA UTC timestamp to ET hour (handles EDT/EST automatically)."""
+    dt    = datetime.fromisoformat(open_time.replace("Z", "+00:00"))
+    month = dt.month
+    # EDT = UTC-4 (Mar-Nov), EST = UTC-5 (Nov-Mar)
+    offset = 4 if 3 <= month <= 11 else 5
+    return (dt.hour - offset) % 24
+
 def get_orb_session(open_time: str) -> str:
     try:
-        import pytz
-        et   = pytz.timezone("America/New_York")
-        dt   = datetime.fromisoformat(open_time.replace("Z", "+00:00"))
-        hour = dt.astimezone(et).hour
-        if 19 <= hour <= 23:
-            return "Asia"
-        elif 8 <= hour <= 12:
-            return "NY"
-        else:
-            return "Other"
+        hour = utc_to_et_hour(open_time)
+        if hour >= 19 or hour < 3:  return "Asia"
+        if 9 <= hour < 17:          return "NY"
+        return "Other"
     except:
-        return "Unknown"
+        return "Other"
 
 def get_sf_session(open_time: str) -> str:
-    """Tag Sharkfin trade as London, NY, or London/NY Overlap based on open time in ET."""
     try:
-        import pytz
-        et   = pytz.timezone("America/New_York")
-        dt   = datetime.fromisoformat(open_time.replace("Z", "+00:00"))
-        hour = dt.astimezone(et).hour
-        if 8 <= hour < 12:
-            return "London/NY"
-        elif 3 <= hour < 8:
-            return "London"
-        elif 12 <= hour < 17:
-            return "NY"
-        else:
-            return "Other"
+        hour = utc_to_et_hour(open_time)
+        if 3  <= hour < 8:  return "London"
+        if 8  <= hour < 12: return "London/NY"
+        if 12 <= hour < 17: return "NY"
+        return "Other"
     except:
-        return "Unknown"
+        return "Other"
 
 # ─── SHARED OANDA FETCH ───────────────────────────────────────────────────────
 def fetch_oanda_trades():
