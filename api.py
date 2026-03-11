@@ -137,12 +137,12 @@ def fetch_oanda_trades():
 
         if "ORB" in comment:
             bot = "ORB"
+        elif "DIVERGE" in comment or "DIV" in comment:
+            bot = "DIVERGE"
         elif "SHARKFIN" in comment or "SF" in comment:
             bot = "SHARKFIN"
         else:
-            # Fallback heuristic until tags propagate:
-            # Sharkfin targets 5 pips — very short duration
-            # ORB holds longer with trailing stop
+            # Fallback heuristic until tags propagate
             bot = "ORB" if dur >= 10 else "SHARKFIN"
 
         # R-multiple — ORB uses ~1R risk, SF uses 15pip stop / 5pip TP
@@ -168,7 +168,7 @@ def fetch_oanda_trades():
             "units":       abs(initial),
             "rMultiple":   r_mult,
             "comment":     comment,
-            "session":     get_orb_session(open_time) if bot == "ORB" else get_sf_session(open_time) if bot == "SHARKFIN" else None,
+            "session":     get_orb_session(open_time) if bot == "ORB" else get_sf_session(open_time) if bot in ("SHARKFIN","DIVERGE") else None,
         })
 
     # Enrich with Supabase stats (max profit/drawdown)
@@ -209,6 +209,16 @@ def sharkfin_trades():
         trades = fetch_oanda_trades()
         sf = [t for t in trades if t["bot"] == "SHARKFIN"]
         return jsonify({"ok": True, "trades": sf, "count": len(sf)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+# ─── DIVERGE TRADES ONLY ─────────────────────────────────────────────────────
+@app.route("/trades/diverge")
+def diverge_trades():
+    try:
+        trades = fetch_oanda_trades()
+        div = [t for t in trades if t["bot"] == "DIVERGE"]
+        return jsonify({"ok": True, "trades": div, "count": len(div)})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
