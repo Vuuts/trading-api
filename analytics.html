@@ -118,6 +118,7 @@ window.addEventListener('load', function() {
     const URLS = {
       orb: 'https://web-production-f5a70.up.railway.app/trades/orb',
       sf:  'https://web-production-f5a70.up.railway.app/trades/sharkfin',
+      div: 'https://web-production-f5a70.up.railway.app/trades/diverge',
       ma:  'https://web-production-f5a70.up.railway.app/trades/alpaca'
     };
 
@@ -548,18 +549,20 @@ window.addEventListener('load', function() {
     function App() {
       var tabRef    = useState('orb');
       var tab=tabRef[0], setTab=tabRef[1];
-      var tradesRef = useState({orb:null,sf:null,ma:null});
+      var tradesRef = useState({orb:null,sf:null,div:null,ma:null});
       var trades=tradesRef[0], setTrades=tradesRef[1];
 
       var TABS = [
         {id:'orb',label:'📦 ORB',      cls:'orb',accent:'#ffcc00'},
         {id:'sf', label:'🦈 Sharkfin', cls:'sf', accent:'#ff3d5a'},
+        {id:'div',label:'🔀 Diverge',  cls:'sf', accent:'#a855f7'},
         {id:'ma', label:'📈 Mabouncer',cls:'ma', accent:'#00ff88'},
       ];
 
       var SESSION_TABS = {
         orb: [{id:'all',label:'All'},{id:'Asia',label:'🌏 Asia'},{id:'NY',label:'🗽 NY'}],
         sf:  [{id:'all',label:'All'},{id:'London',label:'🇬🇧 London'},{id:'London/NY',label:'⚡ London/NY'},{id:'NY',label:'🗽 NY'}],
+        div: [{id:'all',label:'All'},{id:'London',label:'🇬🇧 London'},{id:'London/NY',label:'⚡ London/NY'},{id:'NY',label:'🗽 NY'}],
         ma:  [],
       };
 
@@ -584,7 +587,7 @@ window.addEventListener('load', function() {
             h('div',{style:{fontSize:20}},'⚡'),
             h('div',null,
               h('div',{className:'bname'},'TRADE ANALYTICS'),
-              h('div',{className:'bsub'},'3 BOTS LIVE')
+              h('div',{className:'bsub'},'4 BOTS LIVE')
             )
           ),
           h('div',{className:'tabs'},TABS.map(function(t){
