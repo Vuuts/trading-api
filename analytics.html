@@ -137,11 +137,30 @@ window.addEventListener('load', function() {
         const open  = new Date(t.openTime||t.date||Date.now());
         const close = new Date(t.closeTime||t.date||Date.now());
         const dur   = Math.max(1, Math.round((close - open) / 60000));
+
+        // Session: use stored value or infer from openTime (ET = UTC-5)
+        function inferSession(dt, isOrb) {
+          const etHour = (dt.getUTCHours() - 5 + 24) % 24;
+          if (isOrb) {
+            if (etHour >= 19 || etHour < 3) return 'Asia';
+            if (etHour >= 9 && etHour < 17) return 'NY';
+            return 'Other';
+          } else {
+            if (etHour >= 3  && etHour < 8)  return 'London';
+            if (etHour >= 8  && etHour < 12) return 'London/NY';
+            if (etHour >= 12 && etHour < 17) return 'NY';
+            return 'Other';
+          }
+        }
+        const isOrbTrade = !!(t.bot === 'ORB' || t.session_key);
+        const session = t.session || inferSession(open, isOrbTrade);
+
         out.push({
           id: i, date, pair: inst, direction: dir,
           entry: +entry.toFixed(5), exit: +exit.toFixed(5),
           pnl: +pnl.toFixed(4), rMultiple: pnl > 0 ? 1 : -1,
-          durationMin: dur, win: pnl > 0
+          durationMin: dur, win: pnl > 0, session,
+          maxProfit: t.maxProfit||null, maxDrawdown: t.maxDrawdown||null,
         });
       });
       if (!out.length) throw new Error('No 2026 trades found. Check date range in data.');
