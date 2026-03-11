@@ -138,12 +138,17 @@ window.addEventListener('load', function() {
         const close = new Date(t.closeTime||t.date||Date.now());
         const dur   = Math.max(1, Math.round((close - open) / 60000));
 
-        // Session: use stored value or infer from openTime (ET = UTC-5)
+        // Session: use stored value or infer from openTime
+        // March 2026 = EDT (UTC-4), not EST (UTC-5)
         function inferSession(dt, isOrb) {
-          const etHour = (dt.getUTCHours() - 5 + 24) % 24;
+          const utcH = dt.getUTCHours();
+          const utcM = dt.getUTCMonth(); // 0=Jan
+          // EDT (UTC-4) runs Mar-Nov, EST (UTC-5) runs Nov-Mar
+          const offset = (utcM >= 2 && utcM <= 10) ? 4 : 5;
+          const etHour = (utcH - offset + 24) % 24;
           if (isOrb) {
             if (etHour >= 19 || etHour < 3) return 'Asia';
-            if (etHour >= 9 && etHour < 17) return 'NY';
+            if (etHour >= 9  && etHour < 17) return 'NY';
             return 'Other';
           } else {
             if (etHour >= 3  && etHour < 8)  return 'London';
@@ -154,6 +159,7 @@ window.addEventListener('load', function() {
         }
         const isOrbTrade = !!(t.bot === 'ORB' || t.session_key);
         const session = t.session || inferSession(open, isOrbTrade);
+        if (i < 3) console.log('Trade session debug:', t.openTime, '→ etHour check → session:', session, '| stored:', t.session);
 
         out.push({
           id: i, date, pair: inst, direction: dir,
