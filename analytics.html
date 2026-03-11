@@ -169,6 +169,7 @@ window.addEventListener('load', function() {
           pnl: +pnl.toFixed(4), rMultiple: pnl > 0 ? 1 : -1,
           durationMin: dur, win: pnl > 0, session,
           maxProfit: t.maxProfit||null, maxDrawdown: t.maxDrawdown||null,
+          timeframe: t.timeframe||null, bot: t.bot||null,
         });
       });
       if (!out.length) throw new Error('No 2026 trades found. Check date range in data.');
@@ -465,6 +466,7 @@ window.addEventListener('load', function() {
             h('div',{className:'detail-item'},h('div',{className:'detail-label'},'Session'),dv(t.session||'—','b')),
             h('div',{className:'detail-item'},h('div',{className:'detail-label'},'Date'),dv(t.date)),
             h('div',{className:'detail-item'},h('div',{className:'detail-label'},'Units'),dv(t.units)),
+            t.timeframe && h('div',{className:'detail-item'},h('div',{className:'detail-label'},'Timeframe'),dv(t.timeframe,'b')),
             hasMax && h('div',{className:'detail-item'},h('div',{className:'detail-label'},'Max Profit'),dv(t.maxProfit!=null?(t.maxProfit>=0?'+':'')+t.maxProfit.toFixed(5):null,'g')),
             hasMax && h('div',{className:'detail-item'},h('div',{className:'detail-label'},'Max Drawdown'),dv(t.maxDrawdown!=null?t.maxDrawdown.toFixed(5):null,'r')),
             hasMax && h('div',{className:'detail-item'},h('div',{className:'detail-label'},'Price High'),dv(t.maxPrice)),
@@ -482,7 +484,11 @@ window.addEventListener('load', function() {
             return h(React.Fragment,{key:t.id},
               h('tr',{className:isSelected?'selected':'',onClick:function(){toggleRow(t);}},
                 h('td',{className:'mn',style:{color:'#4a5268'}},t.date),
-                h('td',{style:{fontWeight:600}},t.pair),
+                h('td',{style:{fontWeight:600}},
+                  t.timeframe
+                    ? h('span',null,t.pair,' ',h('span',{style:{fontSize:9,background:'rgba(157,111,255,.15)',color:'#a855f7',borderRadius:3,padding:'1px 4px',fontFamily:'IBM Plex Mono',fontWeight:700}},t.timeframe))
+                    : t.pair
+                ),
                 h('td',null,h('span',{className:'tag '+t.direction},t.direction.toUpperCase())),
                 h('td',{className:'mn'},t.entry),
                 h('td',{className:'mn'},t.exit),
