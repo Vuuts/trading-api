@@ -253,6 +253,14 @@ def alpaca_trades():
                 date_str = (o.get("filled_at") or o.get("submitted_at") or "")[:10]
                 if not date_str.startswith("2026"):
                     continue
+                # Parse timeframe from client_order_id — format: MA-5M-AAPL-timestamp
+                coid = o.get("client_order_id", "")
+                tf = "1D"  # default
+                if coid.startswith("MA-"):
+                    parts = coid.split("-")
+                    if len(parts) >= 2:
+                        tf = parts[1]  # e.g. 5M, 15M, 1H, 4H, 1D
+
                 by_symbol[o["symbol"]].append({
                     "side":      o["side"],
                     "qty":       float(o.get("filled_qty", 0)),
@@ -260,6 +268,7 @@ def alpaca_trades():
                     "date":      date_str,
                     "time":      o.get("filled_at") or o.get("submitted_at", ""),
                     "id":        o["id"],
+                    "timeframe": tf,
                 })
 
         # Match buy/sell pairs into completed trades
@@ -303,6 +312,7 @@ def alpaca_trades():
                     "exit":        exit_p,
                     "units":       qty,
                     "rMultiple":   round(1.0 if pnl > 0 else -1.0, 2),
+                    "timeframe":   buy.get("timeframe", "1D"),
                 })
                 trade_idx += 1
 
