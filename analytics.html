@@ -158,7 +158,8 @@ window.addEventListener('load', function() {
           }
         }
         const isOrbTrade = !!(t.bot === 'ORB' || t.session_key);
-        const session = t.session || inferSession(open, isOrbTrade);
+        const storedSession = (t.session && t.session !== 'Unknown') ? t.session : null;
+        const session = storedSession || inferSession(open, isOrbTrade);
         if (i < 3) console.log('Trade session debug:', t.openTime, '→ etHour check → session:', session, '| stored:', t.session);
 
         out.push({
