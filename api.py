@@ -41,10 +41,10 @@ SUPA_HDR = {
 }
 
 def fetch_supabase_stats() -> dict:
-    """Returns dict of trade_id -> stats from Supabase."""
+    """Returns dict of trade_id -> stats from Supabase trades table."""
     try:
         r = requests.get(
-            f"{SUPA_URL}/rest/v1/trade_stats?select=*&limit=500",
+            f"{SUPA_URL}/rest/v1/trades?select=*&limit=500",
             headers=SUPA_HDR, timeout=5
         )
         if r.ok:
@@ -53,17 +53,42 @@ def fetch_supabase_stats() -> dict:
         pass
     return {}
 
+def fetch_supabase_trades(limit=500, status=None, bot=None) -> list:
+    """Fetch trades from Supabase with optional filters."""
+    try:
+        url = f"{SUPA_URL}/rest/v1/trades?select=*&order=opened_at.desc&limit={limit}"
+        if status:
+            url += f"&status=eq.{status}"
+        if bot:
+            url += f"&bot=eq.{bot}"
+        r = requests.get(url, headers=SUPA_HDR, timeout=5)
+        return r.json() if r.ok else []
+    except:
+        return []
+
 @app.route("/trades/detail/<trade_id>")
 def trade_detail(trade_id):
-    """Return full stats for a single trade including max profit/drawdown."""
+    """Return full data for a single trade including signal metadata."""
     try:
         r = requests.get(
-            f"{SUPA_URL}/rest/v1/trade_stats?trade_id=eq.{trade_id}&select=*",
+            f"{SUPA_URL}/rest/v1/trades?trade_id=eq.{trade_id}&select=*",
             headers=SUPA_HDR, timeout=5
         )
         if r.ok and r.json():
-            return jsonify({"ok": True, "stats": r.json()[0]})
+            return jsonify({"ok": True, "trade": r.json()[0]})
         return jsonify({"ok": False, "error": "Trade not found"}), 404
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.route("/trades/history")
+def trades_history():
+    """All trades from Supabase with full signal metadata. Used by Trade Analyst."""
+    try:
+        bot    = request.args.get("bot")
+        status = request.args.get("status")
+        limit  = int(request.args.get("limit", 200))
+        trades = fetch_supabase_trades(limit=limit, status=status, bot=bot)
+        return jsonify({"ok": True, "trades": trades, "count": len(trades)})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
