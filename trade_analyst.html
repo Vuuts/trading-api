@@ -596,14 +596,14 @@
       <span>⬡</span> ASK THE ANALYST
     </div>
     <div class="quick-prompts" id="quickPrompts">
-      <button class="qp" data-q="What patterns do you see in my winning trades vs losing trades?">Win vs Loss patterns</button>
-      <button class="qp" data-q="Which trading session (London, NY, London/NY) is most profitable and why?">Best session</button>
-      <button class="qp" data-q="Which pairs are performing best and worst? Should I stop trading any of them?">Pair performance</button>
-      <button class="qp" data-q="What does my R-multiple distribution look like? Am I cutting winners short or letting losers run?">R-multiple analysis</button>
-      <button class="qp" data-q="Are there any time-of-day patterns in my wins and losses?">Time patterns</button>
-      <button class="qp" data-q="Give me a brutally honest assessment of this trading system's edge. Is it actually profitable?">Honest assessment</button>
-      <button class="qp" data-q="What should I focus on to improve performance over the next 30 days?">Next 30 days</button>
-      <button class="qp" data-q="Compare the performance of each bot. Which one has the strongest edge?">Bot comparison</button>
+      <button class="qp" data-q="Analyze the clean forex data (post March 13 only). What patterns do you see in wins vs losses?">Forex win/loss patterns</button>
+      <button class="qp" data-q="Which forex session is most profitable in the clean data? London, NY, or London/NY?">Best forex session</button>
+      <button class="qp" data-q="Which forex pairs are performing best and worst in clean data? Any I should stop trading?">Forex pair performance</button>
+      <button class="qp" data-q="Analyze my R-multiple distribution for forex only. Am I cutting winners short or letting losers run?">Forex R-multiple</button>
+      <button class="qp" data-q="Assess Mabouncer's performance as a % of the $100k paper account. Is the win rate acceptable for a 200MA bounce strategy?">Mabouncer assessment</button>
+      <button class="qp" data-q="Give an honest assessment of the forex system edge using clean data only (post March 13). Ignore pre-March-13 trades.">Honest forex assessment</button>
+      <button class="qp" data-q="Compare ORB, Sharkfin, and DIVERGE on clean data only. Which has the strongest edge so far?">Forex bot comparison</button>
+      <button class="qp" data-q="What should I focus on to improve the forex system over the next 30 days? Be specific.">Next 30 days</button>
     </div>
     <div class="prompt-input-wrap">
       <textarea id="promptInput" placeholder="Ask anything about your trade history — patterns, edge, improvements, risk..."></textarea>
@@ -976,100 +976,125 @@ function buildTradeContext() {
   const trades = getActiveTrades();
   if (!trades.length) return 'No trades available.';
 
-  const wins   = trades.filter(t => parseFloat(t.pnl || 0) > 0);
-  const losses = trades.filter(t => parseFloat(t.pnl || 0) <= 0);
-  const netPnl = trades.reduce((s, t) => s + parseFloat(t.pnl || 0), 0);
+  // ── Separate forex and stocks ─────────────────────────────────────────────
+  const forexBots  = ['orb', 'sf', 'div'];
+  const stocksBots = ['ma'];
+  const forexTrades  = Object.entries(allTrades).filter(([b]) => forexBots.includes(b)).flatMap(([,t]) => t);
+  const stocksTrades = Object.entries(allTrades).filter(([b]) => stocksBots.includes(b)).flatMap(([,t]) => t);
 
-  // Pair breakdown
-  const pairMap = {};
-  trades.forEach(t => {
-    const p = t.pair || t.instrument || 'UNKNOWN';
-    if (!pairMap[p]) pairMap[p] = { wins: 0, losses: 0, pnl: 0 };
-    const pnl = parseFloat(t.pnl || 0);
-    if (pnl > 0) pairMap[p].wins++; else pairMap[p].losses++;
-    pairMap[p].pnl += pnl;
-  });
+  // ── Clean data cutoff — March 13 2026 (TZ fix date) ──────────────────────
+  const CLEAN_DATE = '2026-03-13';
+  const cleanForex  = forexTrades.filter(t => (t.date||t.openTime||'') >= CLEAN_DATE);
+  const dirtyForex  = forexTrades.filter(t => (t.date||t.openTime||'') < CLEAN_DATE);
 
-  // Session breakdown
-  const sessMap = {};
-  trades.forEach(t => {
-    const s = t.session || 'Unknown';
-    if (!sessMap[s]) sessMap[s] = { wins: 0, losses: 0, pnl: 0 };
-    const pnl = parseFloat(t.pnl || 0);
-    if (pnl > 0) sessMap[s].wins++; else sessMap[s].losses++;
-    sessMap[s].pnl += pnl;
-  });
+  function groupStats(ts) {
+    if (!ts.length) return null;
+    const wins = ts.filter(t => parseFloat(t.pnl||0) > 0);
+    const pnl  = ts.reduce((s,t) => s + parseFloat(t.pnl||0), 0);
+    const avgDur = ts.reduce((s,t) => s + (t.durationMin||0), 0) / ts.length;
+    const winDur = wins.length ? wins.reduce((s,t) => s + (t.durationMin||0), 0) / wins.length : 0;
+    const lossDur = ts.filter(t => parseFloat(t.pnl||0)<=0).length
+      ? ts.filter(t => parseFloat(t.pnl||0)<=0).reduce((s,t) => s+(t.durationMin||0), 0) / ts.filter(t=>parseFloat(t.pnl||0)<=0).length : 0;
+    return { count: ts.length, wins: wins.length, wr: ((wins.length/ts.length)*100).toFixed(1),
+             pnl: pnl.toFixed(4), avgDur: avgDur.toFixed(0), winDur: winDur.toFixed(0), lossDur: lossDur.toFixed(0) };
+  }
 
-  // Bot breakdown
-  const botMap = {};
-  Object.entries(allTrades).forEach(([bot, bTrades]) => {
-    if (!bTrades.length) return;
-    const bWins = bTrades.filter(t => parseFloat(t.pnl || 0) > 0);
-    botMap[bot] = {
-      trades: bTrades.length,
-      wins: bWins.length,
-      wr: ((bWins.length / bTrades.length) * 100).toFixed(1),
-      pnl: bTrades.reduce((s, t) => s + parseFloat(t.pnl || 0), 0).toFixed(4),
-    };
-  });
+  function pairBreakdown(ts) {
+    const pm = {};
+    ts.forEach(t => {
+      const p = (t.pair||t.instrument||'UNKNOWN').replace('_','/');
+      if (!pm[p]) pm[p] = { wins:0, losses:0, pnl:0 };
+      const pnl = parseFloat(t.pnl||0);
+      if (pnl > 0) pm[p].wins++; else pm[p].losses++;
+      pm[p].pnl += pnl;
+    });
+    return Object.entries(pm).sort((a,b) => b[1].pnl - a[1].pnl).slice(0,10)
+      .map(([p,d]) => `  ${p}: ${d.wins+d.losses} trades | ${((d.wins/(d.wins+d.losses))*100).toFixed(0)}% WR | PnL: ${d.pnl.toFixed(4)}`).join('\n');
+  }
 
-  // Duration analysis
-  const avgDur = trades.reduce((s,t) => s + (t.durationMin || 0), 0) / trades.length;
-  const winDur = wins.length ? wins.reduce((s,t) => s + (t.durationMin || 0), 0) / wins.length : 0;
-  const lossDur = losses.length ? losses.reduce((s,t) => s + (t.durationMin || 0), 0) / losses.length : 0;
+  function sessionBreakdown(ts) {
+    const sm = {};
+    ts.forEach(t => {
+      const s = t.session||'Unknown';
+      if (!sm[s]) sm[s] = { wins:0, losses:0, pnl:0 };
+      const pnl = parseFloat(t.pnl||0);
+      if (pnl>0) sm[s].wins++; else sm[s].losses++;
+      sm[s].pnl += pnl;
+    });
+    return Object.entries(sm).sort((a,b) => b[1].pnl - a[1].pnl)
+      .map(([s,d]) => `  ${s}: ${d.wins+d.losses} trades | ${((d.wins/(d.wins+d.losses))*100).toFixed(0)}% WR | PnL: ${d.pnl.toFixed(4)}`).join('\n');
+  }
 
-  // R-multiple dist
-  const rDist = { 'neg': 0, '0-0.5': 0, '0.5-1': 0, '1+': 0, '2+': 0 };
-  trades.forEach(t => {
-    const r = parseFloat(t.rMultiple || 0);
-    if (r < 0) rDist['neg']++;
-    else if (r < 0.5) rDist['0-0.5']++;
-    else if (r < 1) rDist['0.5-1']++;
-    else if (r < 2) rDist['1+']++;
-    else rDist['2+']++;
-  });
+  function botBreakdown(ts) {
+    const bm = {};
+    ts.forEach(t => {
+      const b = t.bot||'unknown';
+      if (!bm[b]) bm[b] = { wins:0, count:0, pnl:0 };
+      const pnl = parseFloat(t.pnl||0);
+      if (pnl>0) bm[b].wins++; bm[b].count++; bm[b].pnl += pnl;
+    });
+    return Object.entries(bm).map(([b,d]) =>
+      `  ${b.toUpperCase()}: ${d.count} trades | ${((d.wins/d.count)*100).toFixed(1)}% WR | PnL: ${d.pnl.toFixed(4)}`).join('\n');
+  }
 
-  // Recent 10 trades
-  const recent = [...trades]
-    .sort((a,b) => new Date(b.openTime||b.date) - new Date(a.openTime||a.date))
-    .slice(0, 10)
-    .map(t => `  ${t.date||''} ${(t.pair||t.instrument||'').replace('_','/')} ${t.direction||''} PnL:${parseFloat(t.pnl||0).toFixed(4)} Session:${t.session||'?'} Dur:${t.durationMin||0}m R:${t.rMultiple||0}`)
-    .join('\n');
+  function rDist(ts) {
+    const d = { neg:0, half:0, one:0, two:0, twoplus:0 };
+    ts.forEach(t => {
+      const r = parseFloat(t.rMultiple||0);
+      if (r < 0) d.neg++; else if (r < 0.5) d.half++; else if (r < 1) d.one++; else if (r < 2) d.two++; else d.twoplus++;
+    });
+    return `  Negative R: ${d.neg} | 0-0.5R: ${d.half} | 0.5-1R: ${d.one} | 1-2R: ${d.two} | 2R+: ${d.twoplus}`;
+  }
+
+  const fs  = groupStats(cleanForex);
+  const ss  = groupStats(stocksTrades);
+  const all = groupStats(trades);
+
+  // Recent 10 clean forex trades
+  const recentForex = cleanForex.sort((a,b) => new Date(b.openTime||b.date) - new Date(a.openTime||a.date))
+    .slice(0,10).map(t => `  ${(t.date||'').slice(0,10)} ${(t.pair||'').replace('_','/')} ${t.direction||''} PnL:${parseFloat(t.pnl||0).toFixed(4)} Sess:${t.session||'?'} ${t.durationMin||0}m`).join('\n');
 
   return `
-TRADE DATA SUMMARY (Filter: ${selectedBot === 'all' ? 'All Bots' : selectedBot.toUpperCase()})
+TRADING SYSTEM ANALYSIS
 Generated: ${new Date().toUTCString()}
+⚠ DATA NOTE: Trades before 2026-03-13 have incorrect session/timezone tags (TZ bug fixed on that date). Clean forex data starts March 13.
 
-OVERVIEW
-Total Trades: ${trades.length}
-Wins: ${wins.length} | Losses: ${losses.length}
-Win Rate: ${((wins.length/trades.length)*100).toFixed(1)}%
-Net P&L: ${netPnl.toFixed(4)}
-Avg Trade Duration: ${avgDur.toFixed(0)} minutes
-Win Duration Avg: ${winDur.toFixed(0)}m | Loss Duration Avg: ${lossDur.toFixed(0)}m
+════════════════════════════════
+FOREX ACCOUNT (OANDA LIVE)
+Account balance: ~$4.50 USD
+Bots: ORB, Sharkfin, DIVERGE
+════════════════════════════════
+${fs ? `Clean data (post Mar 13): ${fs.count} trades | ${fs.wr}% WR | Net PnL: $${fs.pnl}
+Avg duration: ${fs.avgDur}m | Win avg: ${fs.winDur}m | Loss avg: ${fs.lossDur}m` : 'No clean forex data yet'}
 
-BOT BREAKDOWN
-${Object.entries(botMap).map(([b,s]) => `  ${b.toUpperCase()}: ${s.trades} trades | ${s.wr}% WR | PnL: ${s.pnl}`).join('\n')}
+${dirtyForex.length ? `⚠ Dirty data (pre Mar 13, TZ bug): ${dirtyForex.length} trades — DO NOT use for strategy evaluation` : ''}
 
-SESSION BREAKDOWN
-${Object.entries(sessMap).sort((a,b) => b[1].pnl - a[1].pnl).map(([s,d]) => 
-  `  ${s}: ${d.wins+d.losses} trades | ${((d.wins/(d.wins+d.losses))*100).toFixed(0)}% WR | PnL: ${d.pnl.toFixed(4)}`
-).join('\n')}
+FOREX BOT BREAKDOWN (clean data only)
+${botBreakdown(cleanForex) || '  No data'}
 
-PAIR BREAKDOWN (top 10 by P&L)
-${Object.entries(pairMap).sort((a,b) => b[1].pnl - a[1].pnl).slice(0,10).map(([p,d]) =>
-  `  ${p.replace('_','/')}: ${d.wins+d.losses} trades | ${((d.wins/(d.wins+d.losses))*100).toFixed(0)}% WR | PnL: ${d.pnl.toFixed(4)}`
-).join('\n')}
+FOREX SESSION BREAKDOWN (clean data only)
+${sessionBreakdown(cleanForex) || '  No data'}
 
-R-MULTIPLE DISTRIBUTION
-  Negative R: ${rDist['neg']} trades
-  0–0.5R: ${rDist['0-0.5']} trades
-  0.5–1R: ${rDist['0.5-1']} trades
-  1–2R: ${rDist['1+']} trades
-  2R+: ${rDist['2+']} trades
+FOREX PAIR BREAKDOWN (clean data only)
+${pairBreakdown(cleanForex) || '  No data'}
 
-RECENT 10 TRADES
-${recent}
+FOREX R-MULTIPLE DISTRIBUTION (clean data only)
+${rDist(cleanForex)}
+
+RECENT 10 FOREX TRADES
+${recentForex || '  No trades yet'}
+
+════════════════════════════════
+STOCKS ACCOUNT (ALPACA PAPER)
+Account balance: ~$100,000 USD (PAPER — not real money)
+Bot: Mabouncer (200MA bounce)
+IMPORTANT: Dollar PnL here is NOT comparable to forex — account is 22,000x larger.
+Evaluate by win rate and % of account only.
+════════════════════════════════
+${ss ? `${ss.count} trades | ${ss.wr}% WR | Net PnL: $${ss.pnl} (${ss.pnl && Math.abs(parseFloat(ss.pnl)/100000*100).toFixed(3)}% of $100k account)
+Avg duration: ${ss.avgDur}m | Win avg: ${ss.winDur}m | Loss avg: ${ss.lossDur}m` : 'No stock data'}
+
+${ss ? `R-MULTIPLE DISTRIBUTION (stocks)\n${rDist(stocksTrades)}` : ''}
 `.trim();
 }
 
@@ -1092,17 +1117,26 @@ async function runAnalysis(question) {
 
   const tradeContext = buildTradeContext();
 
-  const systemPrompt = `You are an expert trading analyst reviewing the performance of an automated multi-bot forex and stock trading system.
+  const systemPrompt = `You are an expert trading analyst reviewing an automated multi-bot trading system.
 
-The system runs 4 bots:
-- ORB (Opening Range Breakout) — forex, OANDA live account
-- Sharkfin — forex, Bollinger Band + RSI reversal strategy
-- DIVERGE — forex, RSI divergence on Bollinger Bands
-- Mabouncer — stocks, 200MA bounce strategy on Alpaca paper
+SYSTEM OVERVIEW:
+- 3 forex bots on OANDA live account (tiny ~$4.50 balance — in early data collection phase)
+  - ORB: Opening Range Breakout on 28 forex pairs
+  - Sharkfin: Bollinger Band + RSI mean reversion (3m candles)
+  - DIVERGE: RSI divergence on Bollinger Bands (3m candles)
+- 1 stock bot on Alpaca PAPER account ($100,000 paper balance — NOT real money)
+  - Mabouncer: 200MA bounce strategy
 
-Your job is to analyze the trade data provided and give honest, actionable insights. Be direct and specific. Use numbers. Don't sugarcoat poor performance. Point out real patterns, not generic advice.
+CRITICAL CONTEXT FOR ANALYSIS:
+1. Forex and stocks are SEPARATE accounts with completely different balances. Never compare raw dollar PnL between them.
+2. For stocks: evaluate by win rate and % of $100k account only. Dollar amounts are meaningless vs forex.
+3. Clean data only starts March 13 2026 — a timezone bug caused incorrect session tagging before that date. Flag any analysis relying on pre-March-13 data as unreliable.
+4. The forex account is intentionally tiny (~$4.50) — the system is in a 60-day data collection phase before scaling.
+5. The Sharkfin bot recently added a split-position structure (60% at TP1, 40% at midline) — early trades won't reflect this.
 
-Format your response clearly. Use **bold** for key findings. Use bullet points for lists. Keep it tight — no filler.`;
+Your job: give honest, specific, actionable insights. Use numbers. Separate forex from stocks in every analysis. Flag dirty data explicitly. No generic advice.
+
+Format: **bold** key findings, bullet points for lists, tight and direct.`;
 
   const userMessage = `Here is my trading data:\n\n${tradeContext}\n\nQuestion: ${question}`;
 
