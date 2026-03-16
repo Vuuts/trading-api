@@ -376,6 +376,45 @@ def oanda_account():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+
+# ─── CLAUDE PROXY ─────────────────────────────────────────────────────────────
+@app.route("/claude", methods=["POST", "OPTIONS"])
+def claude_proxy():
+    """
+    Proxy Claude API calls from the browser.
+    Accepts: { "system": "...", "messages": [...], "max_tokens": N }
+    Returns: Anthropic API response
+    """
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        body = request.get_json()
+        if not body:
+            return jsonify({"error": "No JSON body"}), 400
+
+        headers = {
+            "x-api-key":         ANTHROPIC_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type":      "application/json",
+        }
+        payload = {
+            "model":      body.get("model", "claude-sonnet-4-20250514"),
+            "max_tokens": body.get("max_tokens", 1000),
+            "messages":   body.get("messages", []),
+        }
+        if body.get("system"):
+            payload["system"] = body["system"]
+
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers=headers, json=payload, timeout=60
+        )
+        return jsonify(r.json()), r.status_code
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
