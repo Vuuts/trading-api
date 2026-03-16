@@ -415,6 +415,7 @@ window.addEventListener('load', function() {
                 h(RC.CartesianGrid,{strokeDasharray:'3 3',stroke:'#1c2030'}),
                 h(RC.XAxis,{type:'number',tick:{fill:'#4a5268',fontSize:9},tickLine:false}),
                 h(RC.YAxis,{type:'category',dataKey:'pair',tick:{fill:'#8892a8',fontSize:11},width:60,tickLine:false}),
+                h(RC.Tooltip,{formatter:function(v,n,props){return [v+' PnL | '+props.payload.count+' trades',''];},contentStyle:{background:'#0d0f17',border:'1px solid #1c2030',fontSize:11}}),
                 h(RC.Tooltip,{contentStyle:tt}),
                 h(RC.ReferenceLine,{x:0,stroke:'#2a2f40'}),
                 h(RC.Bar,{dataKey:'pnl',radius:[0,4,4,0]},
@@ -434,7 +435,10 @@ window.addEventListener('load', function() {
               h('div',{className:'pn',style:{color:p.pnl>=0?'#f0f2f7':'#ff6b7a'}},p.pair),
               h('div',{style:{fontFamily:'IBM Plex Mono',fontSize:13,fontWeight:600,color:c}},(p.pnl>=0?'+':'')+p.pnl)
             ),
-            h('div',{className:'ps'},'#'+(i+1)+' · '+p.count+' trades · '+p.avgDur+'m avg'),
+            h('div',{className:'ps'},
+              h('span',{style:{background:'rgba(255,255,255,.06)',borderRadius:3,padding:'1px 5px',marginRight:6,fontFamily:'IBM Plex Mono',fontWeight:700,fontSize:11}},p.count+'T'),
+              '#'+(i+1)+' · '+p.avgDur+'m avg · '+(p.wr)+'% WR'
+            ),
             h('div',{className:'pr'},h('span',null,'Win Rate'),h('strong',{style:{fontFamily:'IBM Plex Mono',color:p.wr>=50?accent:'#ff3d5a'}},p.wr+'%')),
             h('div',{className:'pb'},h('div',{className:'pbf',style:{width:pct+'%',background:c}}))
           );
@@ -587,6 +591,32 @@ window.addEventListener('load', function() {
         setTrades(function(s){var n=Object.assign({},s);n[tab]=null;return n;});
       }
 
+      // Auto-fetch when tab has no data
+      var loadingRef = useState(false);
+      var loading=loadingRef[0], setLoading=loadingRef[1];
+      var fetchErrRef = useState('');
+      var fetchErr=fetchErrRef[0], setFetchErr=fetchErrRef[1];
+
+      React.useEffect(function() {
+        if (!trades[tab] && !loading) {
+          setLoading(true); setFetchErr('');
+          fetch(URLS[tab])
+            .then(function(r){ return r.json(); })
+            .then(function(j){
+              try {
+                setTabTrades(parseTrades(j));
+              } catch(e) {
+                setFetchErr(e.message);
+              }
+              setLoading(false);
+            })
+            .catch(function(e){
+              setFetchErr('Fetch failed: ' + e.message);
+              setLoading(false);
+            });
+        }
+      }, [tab]);
+
       return h('div',null,
         h('div',{className:'hdr'},
           h('div',{className:'brand'},
@@ -630,7 +660,19 @@ window.addEventListener('load', function() {
         h('div',{className:'page'},
           current
             ? h(Dashboard,{trades:current,accent:active.accent,name:active.label,onClear:clearTab,isOrb:tab==='orb'&&sesTab==='all',isSf:tab==='sf'&&sesTab==='all'})
-            : h(PastePanel,{tab:tab,onLoad:setTabTrades})
+            : loading
+              ? h('div',{style:{padding:'60px 24px',textAlign:'center',color:'#4a5268',fontFamily:'IBM Plex Mono',fontSize:13}},
+                  h('div',{style:{marginBottom:12,fontSize:20}},'⏳'),
+                  'Loading trade data from Railway...',
+                  h('div',{style:{marginTop:8,fontSize:10,color:'#2e3340'}},URLS[tab])
+                )
+              : fetchErr
+                ? h('div',{style:{padding:'40px 24px'}},
+                    h('div',{style:{color:'#ff3d5a',fontFamily:'IBM Plex Mono',fontSize:12,marginBottom:16}},'⚠ '+fetchErr),
+                    h('div',{style:{fontSize:11,color:'#4a5268',marginBottom:12}},'Manual load — paste JSON from: ',h('a',{href:URLS[tab],target:'_blank',style:{color:'#3d8eff'}},URLS[tab])),
+                    h(PastePanel,{tab:tab,onLoad:setTabTrades})
+                  )
+                : h(PastePanel,{tab:tab,onLoad:setTabTrades})
         )
       );
     }
