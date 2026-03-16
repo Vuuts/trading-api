@@ -872,26 +872,46 @@ document.addEventListener('keydown', e => {
 
 async function fetchAllTrades() {
   setStatus('loading', 'Loading trade history...');
+  const errors = [];
+
   const [results] = await Promise.all([
     Promise.allSettled(
       Object.entries(URLS).map(async ([bot, url]) => {
-        const r = await fetch(url);
-        const d = await r.json();
-        const trades = d.trades || d.results || [];
-        allTrades[bot] = trades;
-        return { bot, count: trades.length };
+        try {
+          const r = await fetch(url, { cache: 'no-store' });
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          const d = await r.json();
+          const trades = d.trades || d.results || [];
+          allTrades[bot] = trades;
+          return { bot, count: trades.length };
+        } catch(e) {
+          errors.push(`${bot.toUpperCase()}: ${e.message}`);
+          allTrades[bot] = [];
+          return { bot, count: 0 };
+        }
       })
     ),
     fetchHistory(),
   ]);
 
   const total = Object.values(allTrades).reduce((s, t) => s + t.length, 0);
+
   if (total === 0) {
-    setStatus('error', 'No trades found — bots may not have traded yet');
+    const errMsg = errors.length
+      ? 'Fetch errors — ' + errors.join(' | ')
+      : 'No trades found — bots may not have traded yet';
+    setStatus('error', errMsg);
+    // Show retry button
+    const sb = document.getElementById('statusText');
+    if (sb) sb.innerHTML += ' <button onclick="fetchAllTrades()" style="margin-left:12px;background:rgba(61,142,255,.15);border:1px solid rgba(61,142,255,.3);color:#3d8eff;padding:3px 10px;border-radius:4px;font-family:Space Mono,monospace;font-size:10px;cursor:pointer">RETRY</button>';
     return;
   }
 
-  setStatus('ready', `Trade history loaded`);
+  if (errors.length) {
+    setStatus('ready', `Loaded ${total} trades (${errors.length} bot(s) failed)`);
+  } else {
+    setStatus('ready', `Trade history loaded`);
+  }
   document.getElementById('tradeCount').textContent = `${total} closed trades`;
   renderSummary();
   renderTradeTable();
