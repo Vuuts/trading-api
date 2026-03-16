@@ -719,25 +719,25 @@ function renderTradeTable() {
     const band     = t._band || '—';
     const tradeId  = t.id || t.tradeId || t.trade_id || '';
 
-    return \`<tr>
-      <td>\${date}</td>
-      <td class="td-pair">\${pair}</td>
-      <td class="td-bot">\${bot}</td>
-      <td class="\${dir==='buy'?'td-buy':'td-sell'}">\${dir.toUpperCase()}</td>
-      <td>\${session}</td>
-      <td>\${entry}</td>
-      <td>\${sl}</td>
-      <td>\${tp}</td>
-      <td class="\${isWin?'td-win':'td-loss'}">\${pnl>=0?'+':''}\${pnl.toFixed(4)}</td>
-      <td class="\${parseFloat(r)>=0?'td-win':'td-loss'}">\${r}R</td>
-      <td class="\${rsi!='—'?(parseFloat(rsi)>75?'td-sell':parseFloat(rsi)<25?'td-buy':'td-neutral'):'td-neutral'}">\${rsi}</td>
-      <td>\${band}</td>
-      <td><button class="explain-btn" onclick="explainTrade(\${JSON.stringify(t).replace(/"/g,'&quot;')})">WHY ⬡</button></td>
-    </tr>\`;
+    return `<tr>
+      <td>${date}</td>
+      <td class="td-pair">${pair}</td>
+      <td class="td-bot">${bot}</td>
+      <td class="${dir==='buy'?'td-buy':'td-sell'}">${dir.toUpperCase()}</td>
+      <td>${session}</td>
+      <td>${entry}</td>
+      <td>${sl}</td>
+      <td>${tp}</td>
+      <td class="${isWin?'td-win':'td-loss'}">${pnl>=0?'+':''}${pnl.toFixed(4)}</td>
+      <td class="${parseFloat(r)>=0?'td-win':'td-loss'}">${r}R</td>
+      <td class="${rsi!='—'?(parseFloat(rsi)>75?'td-sell':parseFloat(rsi)<25?'td-buy':'td-neutral'):'td-neutral'}">${rsi}</td>
+      <td>${band}</td>
+      <td><button class="explain-btn" onclick="explainTrade(${JSON.stringify(t).replace(/"/g,'&quot;')})">WHY ⬡</button></td>
+    </tr>`;
   }).join('');
 
   moreBtn.style.display = trades.length > tableShowCount ? 'block' : 'none';
-  moreBtn.textContent   = \`SHOW MORE (\${trades.length - tableShowCount} remaining) ↓\`;
+  moreBtn.textContent   = `SHOW MORE (${trades.length - tableShowCount} remaining) ↓`;
 }
 
 function showMoreTrades() {
@@ -769,28 +769,28 @@ async function explainTrade(trade) {
     try { filterObj = typeof filters === 'string' ? JSON.parse(filters) : filters; } catch(e) {}
   }
   const filterTags = Object.entries(filterObj).map(([k,v]) =>
-    \`<span class="filter-tag \${v?'filter-pass':'filter-fail'}">\${k}: \${v?'✓':'✗'}</span>\`
+    `<span class="filter-tag ${v?'filter-pass':'filter-fail'}">${k}: ${v?'✓':'✗'}</span>`
   ).join('');
 
-  content.innerHTML = \`
+  content.innerHTML = `
     <div style="font-family:var(--sans);font-size:18px;font-weight:700;color:var(--t1);margin-bottom:16px">
-      \${dir==='buy'?'🟢':'🔴'} \${pair} \${dir.toUpperCase()} — \${isWin?'<span style=color:var(--green)>WIN</span>':'<span style=color:var(--red)>LOSS</span>'}
+      ${dir==='buy'?'🟢':'🔴'} ${pair} ${dir.toUpperCase()} — ${isWin?'<span style=color:var(--green)>WIN</span>':'<span style=color:var(--red)>LOSS</span>'}
     </div>
     <div class="explain-trade-meta">
-      <div class="explain-meta-item"><div class="explain-meta-label">Bot</div><div class="explain-meta-val">\${bot}</div></div>
-      <div class="explain-meta-item"><div class="explain-meta-label">Date</div><div class="explain-meta-val">\${date}</div></div>
-      <div class="explain-meta-item"><div class="explain-meta-label">Session</div><div class="explain-meta-val">\${session}</div></div>
-      <div class="explain-meta-item"><div class="explain-meta-label">Entry</div><div class="explain-meta-val">\${parseFloat(trade.entry||trade.price||0).toFixed(5)}</div></div>
-      <div class="explain-meta-item"><div class="explain-meta-label">SL</div><div class="explain-meta-val">\${trade.sl?parseFloat(trade.sl).toFixed(5):'—'}</div></div>
-      <div class="explain-meta-item"><div class="explain-meta-label">TP</div><div class="explain-meta-val">\${trade.tp?parseFloat(trade.tp).toFixed(5):'—'}</div></div>
-      \${rsi ? \`<div class="explain-meta-item"><div class="explain-meta-label">RSI</div><div class="explain-meta-val">\${rsi}</div></div>\` : ''}
-      \${band ? \`<div class="explain-meta-item"><div class="explain-meta-label">Band</div><div class="explain-meta-val">\${band}σ</div></div>\` : ''}
-      <div class="explain-meta-item"><div class="explain-meta-label">P&L</div><div class="explain-meta-val" style="color:\${isWin?'var(--green)':'var(--red)'}">\${pnl>=0?'+':''}\${pnl.toFixed(4)}</div></div>
-      <div class="explain-meta-item"><div class="explain-meta-label">R-Multiple</div><div class="explain-meta-val">\${parseFloat(trade.rMultiple||0).toFixed(2)}R</div></div>
-      \${trade.durationMin ? \`<div class="explain-meta-item"><div class="explain-meta-label">Duration</div><div class="explain-meta-val">\${trade.durationMin}m</div></div>\` : ''}
+      <div class="explain-meta-item"><div class="explain-meta-label">Bot</div><div class="explain-meta-val">${bot}</div></div>
+      <div class="explain-meta-item"><div class="explain-meta-label">Date</div><div class="explain-meta-val">${date}</div></div>
+      <div class="explain-meta-item"><div class="explain-meta-label">Session</div><div class="explain-meta-val">${session}</div></div>
+      <div class="explain-meta-item"><div class="explain-meta-label">Entry</div><div class="explain-meta-val">${parseFloat(trade.entry||trade.price||0).toFixed(5)}</div></div>
+      <div class="explain-meta-item"><div class="explain-meta-label">SL</div><div class="explain-meta-val">${trade.sl?parseFloat(trade.sl).toFixed(5):'—'}</div></div>
+      <div class="explain-meta-item"><div class="explain-meta-label">TP</div><div class="explain-meta-val">${trade.tp?parseFloat(trade.tp).toFixed(5):'—'}</div></div>
+      ${rsi ? `<div class="explain-meta-item"><div class="explain-meta-label">RSI</div><div class="explain-meta-val">${rsi}</div></div>` : ''}
+      ${band ? `<div class="explain-meta-item"><div class="explain-meta-label">Band</div><div class="explain-meta-val">${band}σ</div></div>` : ''}
+      <div class="explain-meta-item"><div class="explain-meta-label">P&L</div><div class="explain-meta-val" style="color:${isWin?'var(--green)':'var(--red)'}">${pnl>=0?'+':''}${pnl.toFixed(4)}</div></div>
+      <div class="explain-meta-item"><div class="explain-meta-label">R-Multiple</div><div class="explain-meta-val">${parseFloat(trade.rMultiple||0).toFixed(2)}R</div></div>
+      ${trade.durationMin ? `<div class="explain-meta-item"><div class="explain-meta-label">Duration</div><div class="explain-meta-val">${trade.durationMin}m</div></div>` : ''}
     </div>
-    \${filterTags ? \`<div class="explain-filters">\${filterTags}</div>\` : ''}
-    \${reason ? \`<div style="font-size:11px;color:var(--t2);margin-bottom:16px;padding:10px;background:var(--bg2);border-radius:6px;border-left:2px solid var(--purple)">\${reason}</div>\` : ''}
+    ${filterTags ? `<div class="explain-filters">${filterTags}</div>` : ''}
+    ${reason ? `<div style="font-size:11px;color:var(--t2);margin-bottom:16px;padding:10px;background:var(--bg2);border-radius:6px;border-left:2px solid var(--purple)">${reason}</div>` : ''}
     <div class="explain-ai-section">
       <div class="explain-ai-label">⬡ AI Explanation</div>
       <div class="explain-ai-body" id="explainAiBody">
@@ -800,28 +800,28 @@ async function explainTrade(trade) {
         </div>
       </div>
     </div>
-  \`;
+  `;
 
   // Build context for Claude
-  const tradeContext = \`
+  const tradeContext = `
 Trade Details:
-- Bot: \${bot}
-- Pair: \${pair}
-- Direction: \${dir.toUpperCase()}
-- Date/Time: \${date} (\${session} session)
-- Entry: \${parseFloat(trade.entry||trade.price||0).toFixed(5)}
-- Stop Loss: \${trade.sl ? parseFloat(trade.sl).toFixed(5) : 'unknown'}
-- Take Profit: \${trade.tp ? parseFloat(trade.tp).toFixed(5) : 'unknown'}
-- Risk: \${trade.risk_pips ? trade.risk_pips + ' pips' : 'unknown'}
-- Units: \${trade.units || trade.qty || 'unknown'}
-- RSI at Entry: \${rsi || 'unknown'}
-- Bollinger Band: \${band ? band + 'σ' : 'unknown'}
-- Signal Reason: \${reason || 'not recorded'}
-- Filters: \${Object.entries(filterObj).map(([k,v]) => k+': '+v).join(', ') || 'not recorded'}
-- Outcome: \${isWin ? 'WIN' : 'LOSS'} — P&L: \${pnl>=0?'+':''}\${pnl.toFixed(4)}
-- R-Multiple: \${parseFloat(trade.rMultiple||0).toFixed(2)}R
-- Duration: \${trade.durationMin ? trade.durationMin + ' minutes' : 'unknown'}
-  \`.trim();
+- Bot: ${bot}
+- Pair: ${pair}
+- Direction: ${dir.toUpperCase()}
+- Date/Time: ${date} (${session} session)
+- Entry: ${parseFloat(trade.entry||trade.price||0).toFixed(5)}
+- Stop Loss: ${trade.sl ? parseFloat(trade.sl).toFixed(5) : 'unknown'}
+- Take Profit: ${trade.tp ? parseFloat(trade.tp).toFixed(5) : 'unknown'}
+- Risk: ${trade.risk_pips ? trade.risk_pips + ' pips' : 'unknown'}
+- Units: ${trade.units || trade.qty || 'unknown'}
+- RSI at Entry: ${rsi || 'unknown'}
+- Bollinger Band: ${band ? band + 'σ' : 'unknown'}
+- Signal Reason: ${reason || 'not recorded'}
+- Filters: ${Object.entries(filterObj).map(([k,v]) => k+': '+v).join(', ') || 'not recorded'}
+- Outcome: ${isWin ? 'WIN' : 'LOSS'} — P&L: ${pnl>=0?'+':''}${pnl.toFixed(4)}
+- R-Multiple: ${parseFloat(trade.rMultiple||0).toFixed(2)}R
+- Duration: ${trade.durationMin ? trade.durationMin + ' minutes' : 'unknown'}
+  `.trim();
 
   const botDescriptions = {
     'SHARKFIN': 'RSI reversal strategy on Bollinger Bands (34 period). Enters when RSI is overbought/oversold AND outside TDI BB bands (the sharkfin fin). 5m double confirmation required. SL = candle wick + 2 pips + spread. TP = 5 pips net.',
@@ -838,12 +838,12 @@ Trade Details:
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1000,
-        system: \`You are an expert trading analyst for an automated multi-bot trading system. Your job is to explain WHY a specific trade was taken, what the bot was seeing at the time, whether the setup was sound, and what went right or wrong.
+        system: `You are an expert trading analyst for an automated multi-bot trading system. Your job is to explain WHY a specific trade was taken, what the bot was seeing at the time, whether the setup was sound, and what went right or wrong.
 
-Bot strategy: \${botDesc ? botDesc[1] : 'Automated trading strategy'}
+Bot strategy: ${botDesc ? botDesc[1] : 'Automated trading strategy'}
 
-Be direct and specific. Reference the actual numbers. If signal metadata is missing (shown as "unknown" or "not recorded"), note that and explain what you can from what's available. 2-3 paragraphs max.\`,
-        messages: [{ role: 'user', content: \`Explain this trade:\n\n\${tradeContext}\` }]
+Be direct and specific. Reference the actual numbers. If signal metadata is missing (shown as "unknown" or "not recorded"), note that and explain what you can from what's available. 2-3 paragraphs max.`,
+        messages: [{ role: 'user', content: `Explain this trade:\n\n${tradeContext}` }]
       })
     });
 
