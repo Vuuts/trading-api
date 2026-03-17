@@ -548,6 +548,12 @@ def backtest_sharkfin():
         if len(candles) < bb_period + 50:
             return jsonify({"ok": False, "error": "Not enough candles"}), 400
 
+        # Fetch M5 candles for 5m confirmation
+        candles5 = bt_get_candles(pair, "M5", count)
+        _, _h5, _l5, c5, t5 = bt_candles_to_ohlc(candles5) if candles5 else ([],[],[],[],[])
+        u25_5, _, l25_5 = bt_calc_bb(c5, bb_period, bb_dev25) if len(c5) > bb_period else ([],[],[])
+        rsi5_vals = bt_calc_rsi_ewm(c5, rsi_period) if c5 else []
+
         _, highs, lows, closes, times = bt_candles_to_ohlc(candles)
         pip = get_pip(pair)
 
@@ -556,11 +562,44 @@ def backtest_sharkfin():
         rsi_vals      = bt_calc_rsi_ewm(closes, rsi_period)
         tdi_bands     = bt_calc_rsi_bb(rsi_vals, tdi_period, tdi_std)
 
+        def bt_flare(cls, period, dev, lookback=3, max_growth=0.15):
+            if len(cls) < period + lookback + 2: return True
+            u_n, _, l_n = bt_calc_bb(cls, period, dev)
+            u_p, _, l_p = bt_calc_bb(cls[:-lookback], period, dev)
+            w_n = (u_n[-1] - l_n[-1]) if u_n[-1] else 0
+            w_p = (u_p[-1] - l_p[-1]) if u_p[-1] else 0
+            if w_p == 0: return True
+            return (w_n - w_p) / w_p > max_growth
+
+        def bt_squeeze(cls, period, dev, ratio=0.003):
+            u, m, l = bt_calc_bb(cls, period, dev)
+            if u[-1] is None or m[-1] is None or m[-1] == 0: return False
+            pw = [(u[j]-l[j])/m[j] for j in range(-15,-5) if u[j] is not None and m[j]]
+            if not pw: return False
+            was_sq = min(pw) < ratio * 1.5
+            curr_w = (u[-1]-l[-1])/m[-1]
+            return was_sq and curr_w > (sum(pw)/len(pw)) * 1.8
+
+        def bt_5m_conf(direction, m3_time):
+            if not c5 or not t5: return True
+            m5_idx = next((idx for idx, t in enumerate(t5) if t >= m3_time[:16]), None)
+            if m5_idx is None or m5_idx < bb_period + 5: return False
+            r5 = rsi5_vals[m5_idx] if m5_idx < len(rsi5_vals) else None
+            if r5 is None: return False
+            u5v = u25_5[m5_idx] if m5_idx < len(u25_5) else None
+            l5v = l25_5[m5_idx] if m5_idx < len(l25_5) else None
+            c5v = c5[m5_idx]
+            if bt_flare(c5[:m5_idx+1], bb_period, bb_dev30): return False
+            rsi5_ok   = (direction=="sell" and r5 > rsi_ob) or (direction=="buy" and r5 < rsi_os)
+            price5_ok = (direction=="sell" and u5v and c5v >= u5v) or (direction=="buy" and l5v and c5v <= l5v)
+            return rsi5_ok or price5_ok
+
         trades = []
         in_trade_until = -1
+        cooldown_until = -1
 
         for i in range(bb_period + tdi_period + 5, len(closes) - 20):
-            if i <= in_trade_until:
+            if i <= in_trade_until or i <= cooldown_until:
                 continue
             if u25[i] is None or rsi_vals[i] is None:
                 continue
@@ -598,6 +637,18 @@ def backtest_sharkfin():
             if direction == "sell" and closes[i] > u30[i] * 1.001:
                 continue
             if direction == "buy"  and closes[i] < l30[i] * 0.999:
+                continue
+
+            # Flare guard
+            if bt_flare(closes[:i+1], bb_period, bb_dev30):
+                continue
+
+            # Squeeze check
+            if bt_squeeze(closes[:i+1], bb_period, bb_dev25):
+                continue
+
+            # 5m double confirmation
+            if not bt_5m_conf(direction, times[i]):
                 continue
 
             # Entry
@@ -647,6 +698,7 @@ def backtest_sharkfin():
                 "tp1_hit": tp1_hit,
             })
             in_trade_until = i + bars
+            cooldown_until = i + bars + 30
 
         # Stats
         wins   = [t for t in trades if t["pnl_pips"] > 0]
@@ -806,11 +858,14 @@ def backtest_harmonic():
 
         trades = []
         seen = set()
+        in_trade_until_h = -1
 
         # Walk forward — for each candle i, build swing list from candles[0:i]
         # Use stride to speed up — check every 5 candles
         stride = 3
         for i in range(min_pattern + 20, len(candles) - 20, stride):
+            if i <= in_trade_until_h:
+                continue
             highs_sub  = highs_all[:i]
             lows_sub   = lows_all[:i]
             pivots     = find_pivots(highs_sub, lows_sub, pivot_lb)
@@ -887,6 +942,7 @@ def backtest_harmonic():
                         "r_multiple": round(pnl_pips/risk_pips,2) if risk_pips>0 else 0,
                         "tp1_hit": tp1_hit, "full_span": full_span,
                     })
+                    in_trade_until_h = idxs[4] + bars + 5
 
         # Shark scan
         if not pf_filter or "SHARK" in pf_filter:
@@ -986,74 +1042,127 @@ def backtest_harmonic():
 @app.route("/backtest/diverge", methods=["GET"])
 def backtest_diverge():
     """
-    Backtest DIVERGE strategy — RSI divergence on Bollinger Bands (M3).
-    Two-touch state machine: Touch1 → optional SMA retest → Touch2 with RSI divergence.
+    Backtest DIVERGE strategy -- identical filters to live bot.
+    Flare guard, 3m squeeze (hard), HTF squeeze (soft/logged),
+    sharkfin demotion, SMA retest (soft), state expiry.
     """
     try:
         pair        = request.args.get("pair", "EUR_USD")
         count       = int(request.args.get("count", 500))
         bb_period   = int(request.args.get("bb_period", 20))
         bb_entry    = float(request.args.get("bb_entry", 2.5))
+        bb_outer    = float(request.args.get("bb_outer", 3.0))
         rsi_period  = int(request.args.get("rsi_period", 14))
         sl_buf      = float(request.args.get("sl_buffer_pips", 13))
         sma_period  = int(request.args.get("sma_period", 8))
         state_max   = int(request.args.get("state_max_candles", 60))
         require_sma = request.args.get("require_sma", "false").lower() == "true"
+        flare_lb    = 3
+        flare_max   = 0.15
+        htf_sq_pct  = 0.003
+        tdi_period  = 34
+        tdi_std     = 2.0
+        rsi_ob      = 75.0
+        rsi_os      = 25.0
 
         candles = bt_get_candles(pair, "M3", count)
-        if len(candles) < bb_period + sma_period + 20:
+        if len(candles) < bb_period + rsi_period + sma_period + 20:
             return jsonify({"ok": False, "error": "Not enough candles"}), 400
+
+        # HTF H1 candles for soft squeeze check
+        candles_h1 = bt_get_candles(pair, "H1", 30)
+        htf_squeezed_global = False
+        if candles_h1 and len(candles_h1) >= 20:
+            _, _, _, c_h1, _ = bt_candles_to_ohlc(candles_h1)
+            u_h1, _, l_h1 = bt_calc_bb(c_h1, 20, 2.0)
+            if u_h1[-1] and c_h1[-1] > 0:
+                htf_squeezed_global = (u_h1[-1] - l_h1[-1]) / c_h1[-1] < htf_sq_pct
 
         _, highs, lows, closes, times = bt_candles_to_ohlc(candles)
         pip = get_pip(pair)
 
-        def calc_rsi_simple(closes_slice, period):
-            if len(closes_slice) < period + 1:
-                return None
-            gains, losses = [], []
-            for i in range(1, period + 1):
-                d = closes_slice[-(period+1)+i] - closes_slice[-(period+2)+i]
-                (gains if d > 0 else losses).append(abs(d))
-            ag = sum(gains)/period if gains else 0
-            al = sum(losses)/period if losses else 0
+        # ── Indicator helpers ─────────────────────────────────────────────
+        def dv_calc_bb_width(cls, period, dev, offset=0):
+            sub = cls[:-offset] if offset else cls
+            lo, _, hi = bt_calc_bb(sub, period, dev)
+            return (hi[-1] - lo[-1]) if hi[-1] is not None else None
+
+        def dv_flare(cls):
+            if len(cls) < bb_period + flare_lb + 2: return True
+            w_now  = dv_calc_bb_width(cls, bb_period, bb_outer, 0)
+            w_past = dv_calc_bb_width(cls, bb_period, bb_outer, flare_lb)
+            if not w_now or not w_past or w_past == 0: return True
+            return (w_now - w_past) / w_past > flare_max
+
+        def dv_3m_squeeze(cls):
+            u, _, l = bt_calc_bb(cls, bb_period, bb_entry)
+            if u[-1] is None or cls[-1] == 0: return False
+            return (u[-1] - l[-1]) / cls[-1] < 0.0015
+
+        def dv_rsi_simple(cls):
+            if len(cls) < rsi_period + 1: return None
+            gains = [max(cls[-(rsi_period+1)+i] - cls[-(rsi_period+2)+i], 0) for i in range(1, rsi_period+1)]
+            losses= [max(cls[-(rsi_period+2)+i] - cls[-(rsi_period+1)+i], 0) for i in range(1, rsi_period+1)]
+            ag = sum(gains)/rsi_period; al = sum(losses)/rsi_period
             if al == 0: return 100.0
-            return 100 - 100 / (1 + ag/al)
+            return 100 - 100/(1 + ag/al)
 
-        def calc_sma(closes_slice, period):
-            if len(closes_slice) < period: return None
-            return sum(closes_slice[-period:]) / period
+        def dv_tdi_bb(cls):
+            if len(cls) < rsi_period + tdi_period + 1: return None, None, None
+            lookback = tdi_period + rsi_period + 5
+            sub = cls[-lookback:] if len(cls) > lookback else cls
+            alpha = 1.0 / rsi_period
+            ag = sum(max(sub[i]-sub[i-1], 0) for i in range(1, rsi_period+1)) / rsi_period
+            al = sum(max(sub[i-1]-sub[i], 0) for i in range(1, rsi_period+1)) / rsi_period
+            rsi_ser = []
+            for i in range(rsi_period, len(sub)):
+                if i > rsi_period:
+                    d = sub[i] - sub[i-1]
+                    ag = alpha*max(d,0)  + (1-alpha)*ag
+                    al = alpha*max(-d,0) + (1-alpha)*al
+                rsi_ser.append(100.0 if al==0 else 100 - 100/(1 + ag/al))
+            if len(rsi_ser) < tdi_period: return None, None, None
+            w = rsi_ser[-tdi_period:]
+            m = sum(w)/tdi_period
+            s = math.sqrt(sum((x-m)**2 for x in w)/tdi_period)
+            return m - tdi_std*s, m, m + tdi_std*s
 
-        u25_list, mid_list, l25_list = bt_calc_bb(closes, bb_period, bb_entry)
+        def dv_is_sharkfin(cls, rsi_val):
+            lo, _, hi = dv_tdi_bb(cls)
+            if lo is None: return False
+            return (rsi_val > rsi_ob and rsi_val > hi) or (rsi_val < rsi_os and rsi_val < lo)
 
+        def dv_sma(cls):
+            if len(cls) < sma_period: return None
+            return sum(cls[-sma_period:]) / sma_period
+
+        # ── Walk-forward state machine ────────────────────────────────────
         trades = []
         in_trade_until = -1
+        cooldown_until = -1
+        ds = {}
 
-        # State machine per pair
-        ds = {}  # divergence_state
+        start_i = bb_period + rsi_period + tdi_period + sma_period + 10
 
-        for i in range(bb_period + rsi_period + sma_period + 5, len(closes) - 20):
-            if i <= in_trade_until:
+        for i in range(start_i, len(closes) - 20):
+            if i <= in_trade_until or i <= cooldown_until:
                 ds = {}
                 continue
 
-            if u25_list[i] is None:
-                continue
+            cls  = closes[:i+1]
+            u25_all, mid_all, l25_all = bt_calc_bb(cls, bb_period, bb_entry)
+            if u25_all[-1] is None: continue
 
-            cur_c = closes[i]
-            cur_h = highs[i]
-            cur_l = lows[i]
-            u25   = u25_list[i]
-            l25   = l25_list[i]
-            mid   = mid_list[i]
+            cur_c = closes[i]; cur_h = highs[i]; cur_l = lows[i]
+            u25 = u25_all[-1]; l25 = l25_all[-1]; mid = mid_all[-1]
+            rsi  = dv_rsi_simple(cls)
+            sma8 = dv_sma(cls)
+            if rsi is None or sma8 is None: continue
 
-            rsi  = calc_rsi_simple(closes[:i+1], rsi_period)
-            sma8 = calc_sma(closes[:i+1], sma_period)
-
-            if rsi is None or sma8 is None:
-                continue
-
-            # ── Phase 1: Touch1 ───────────────────────────────────────────
+            # ── Phase 1: Touch1 ──────────────────────────────────────────
             if not ds:
+                if dv_flare(cls): continue
+                if dv_3m_squeeze(cls): continue
                 if cur_c >= u25:
                     ds = {"direction":"BEAR","touch1_price":cur_h,"touch1_rsi":rsi,
                           "retested_sma":False,"sma_crossed":False,"candle_count":0}
@@ -1064,87 +1173,92 @@ def backtest_diverge():
 
             direction = ds["direction"]
 
-            # Stale state
-            if direction == "BEAR" and cur_c < l25: ds = {}; continue
-            if direction == "BULL" and cur_c > u25: ds = {}; continue
+            # Stale state guard
+            if direction=="BEAR" and cur_c < l25: ds={}; continue
+            if direction=="BULL" and cur_c > u25: ds={}; continue
 
             ds["candle_count"] += 1
-            if ds["candle_count"] > state_max: ds = {}; continue
+            if ds["candle_count"] > state_max: ds={}; continue
 
-            # ── Phase 2: SMA retest ──────────────────────────────────────
+            # ── Phase 2: SMA retest (soft) ───────────────────────────────
             if not ds["retested_sma"]:
-                if direction == "BEAR" and cur_c < sma8:
-                    ds["sma_crossed"] = True
-                    ds["retested_sma"] = True
-                elif direction == "BULL" and cur_c > sma8:
-                    ds["sma_crossed"] = True
-                    ds["retested_sma"] = True
-
+                if direction=="BEAR" and cur_c < sma8:
+                    ds["sma_crossed"]=True; ds["retested_sma"]=True
+                elif direction=="BULL" and cur_c > sma8:
+                    ds["sma_crossed"]=True; ds["retested_sma"]=True
                 if not ds["retested_sma"]:
-                    if direction == "BEAR" and cur_c >= u25 and cur_h > ds["touch1_price"]:
-                        ds["touch1_price"] = cur_h; ds["touch1_rsi"] = rsi; ds["sma_crossed"] = False
-                    elif direction == "BULL" and cur_c <= l25 and cur_l < ds["touch1_price"]:
-                        ds["touch1_price"] = cur_l; ds["touch1_rsi"] = rsi; ds["sma_crossed"] = False
-                    if require_sma:
-                        continue
-                    # soft filter — fall through to Phase 3 check anyway
+                    if direction=="BEAR" and cur_c>=u25 and cur_h>ds["touch1_price"]:
+                        ds["touch1_price"]=cur_h; ds["touch1_rsi"]=rsi; ds["sma_crossed"]=False; ds["retested_sma"]=False
+                    elif direction=="BULL" and cur_c<=l25 and cur_l<ds["touch1_price"]:
+                        ds["touch1_price"]=cur_l; ds["touch1_rsi"]=rsi; ds["sma_crossed"]=False; ds["retested_sma"]=False
+                    if require_sma: continue
 
             # ── Phase 3: Touch2 ──────────────────────────────────────────
-            if direction == "BEAR" and cur_c >= u25 and rsi < ds["touch1_rsi"]:
-                entry    = cur_c
-                spread   = pip * 1.5
-                sl       = round(cur_h + sl_buf*pip + spread, 5)
-                tp1      = round(mid - spread, 5)   # midline
-                tp2      = round(l25 - spread, 5)   # lower band
-                risk_pips = abs(entry - sl) / pip
-
+            fired = False
+            if direction=="BEAR" and cur_c>=u25 and rsi<ds["touch1_rsi"]:
+                # Sharkfin demotion
+                if dv_is_sharkfin(cls, rsi):
+                    ds={"direction":"BEAR","touch1_price":cur_h,"touch1_rsi":rsi,
+                        "retested_sma":False,"sma_crossed":False,"candle_count":0}
+                    continue
+                # Hard filters at entry
+                if dv_flare(cls): ds={}; continue
+                if dv_3m_squeeze(cls): ds={}; continue
+                # HTF squeeze -- soft, just log it
+                htf_sq = htf_squeezed_global
+                spread = pip * 1.5
+                sl     = round(cur_h + sl_buf*pip + spread, 5)
+                tp1    = round(mid - spread, 5)
+                tp2    = round(l25 - spread, 5)
+                risk_p = abs(cur_c - sl) / pip
                 outcome, exit_price, bars, tp1_hit = bt_simulate_trade(
-                    "sell", entry, sl, tp1, tp2, candles[i+1:i+150], pip
-                )
-                pnl = -risk_pips if outcome=="sl" else (
-                    abs(tp2-entry)/pip if outcome=="tp2" else
-                    (abs(entry-exit_price)/pip if outcome in ("tp1","open") else 0)
-                )
+                    "sell", cur_c, sl, tp1, tp2, candles[i+1:i+150], pip)
+                pnl = -risk_p if outcome=="sl" else (
+                    abs(tp2-cur_c)/pip if outcome=="tp2" else
+                    abs(cur_c-exit_price)/pip if outcome in ("tp1","open") else 0)
                 trades.append({
-                    "time": times[i], "pair": pair, "pattern": "DIVERGE",
-                    "direction": "sell", "entry": round(entry,5), "sl": round(sl,5),
-                    "tp1": round(tp1,5), "tp2": round(tp2,5),
-                    "exit": round(exit_price,5), "outcome": outcome, "bars": bars,
-                    "risk_pips": round(risk_pips,1), "pnl_pips": round(pnl,2),
-                    "r_multiple": round(pnl/risk_pips,2) if risk_pips>0 else 0,
-                    "tp1_hit": tp1_hit,
-                    "sma_retested": ds.get("retested_sma", False),
+                    "time":times[i],"pair":pair,"pattern":"DIVERGE","direction":"sell",
+                    "entry":round(cur_c,5),"sl":round(sl,5),"tp1":round(tp1,5),"tp2":round(tp2,5),
+                    "exit":round(exit_price,5),"outcome":outcome,"bars":bars,
+                    "risk_pips":round(risk_p,1),"pnl_pips":round(pnl,2),
+                    "r_multiple":round(pnl/risk_p,2) if risk_p>0 else 0,
+                    "tp1_hit":tp1_hit,"sma_retested":ds.get("retested_sma",False),
+                    "htf_squeezed":htf_sq,
                 })
                 in_trade_until = i + bars
-                ds = {}
+                cooldown_until = i + bars + 30
+                ds={}; fired=True
 
-            elif direction == "BULL" and cur_c <= l25 and rsi > ds["touch1_rsi"]:
-                entry    = cur_c
-                spread   = pip * 1.5
-                sl       = round(cur_l - sl_buf*pip - spread, 5)
-                tp1      = round(mid + spread, 5)
-                tp2      = round(u25 + spread, 5)
-                risk_pips = abs(entry - sl) / pip
-
+            elif direction=="BULL" and cur_c<=l25 and rsi>ds["touch1_rsi"]:
+                if dv_is_sharkfin(cls, rsi):
+                    ds={"direction":"BULL","touch1_price":cur_l,"touch1_rsi":rsi,
+                        "retested_sma":False,"sma_crossed":False,"candle_count":0}
+                    continue
+                if dv_flare(cls): ds={}; continue
+                if dv_3m_squeeze(cls): ds={}; continue
+                htf_sq = htf_squeezed_global
+                spread = pip * 1.5
+                sl     = round(cur_l - sl_buf*pip - spread, 5)
+                tp1    = round(mid + spread, 5)
+                tp2    = round(u25 + spread, 5)
+                risk_p = abs(cur_c - sl) / pip
                 outcome, exit_price, bars, tp1_hit = bt_simulate_trade(
-                    "buy", entry, sl, tp1, tp2, candles[i+1:i+150], pip
-                )
-                pnl = -risk_pips if outcome=="sl" else (
-                    abs(tp2-entry)/pip if outcome=="tp2" else
-                    (abs(exit_price-entry)/pip if outcome in ("tp1","open") else 0)
-                )
+                    "buy", cur_c, sl, tp1, tp2, candles[i+1:i+150], pip)
+                pnl = -risk_p if outcome=="sl" else (
+                    abs(tp2-cur_c)/pip if outcome=="tp2" else
+                    abs(exit_price-cur_c)/pip if outcome in ("tp1","open") else 0)
                 trades.append({
-                    "time": times[i], "pair": pair, "pattern": "DIVERGE",
-                    "direction": "buy", "entry": round(entry,5), "sl": round(sl,5),
-                    "tp1": round(tp1,5), "tp2": round(tp2,5),
-                    "exit": round(exit_price,5), "outcome": outcome, "bars": bars,
-                    "risk_pips": round(risk_pips,1), "pnl_pips": round(pnl,2),
-                    "r_multiple": round(pnl/risk_pips,2) if risk_pips>0 else 0,
-                    "tp1_hit": tp1_hit,
-                    "sma_retested": ds.get("retested_sma", False),
+                    "time":times[i],"pair":pair,"pattern":"DIVERGE","direction":"buy",
+                    "entry":round(cur_c,5),"sl":round(sl,5),"tp1":round(tp1,5),"tp2":round(tp2,5),
+                    "exit":round(exit_price,5),"outcome":outcome,"bars":bars,
+                    "risk_pips":round(risk_p,1),"pnl_pips":round(pnl,2),
+                    "r_multiple":round(pnl/risk_p,2) if risk_p>0 else 0,
+                    "tp1_hit":tp1_hit,"sma_retested":ds.get("retested_sma",False),
+                    "htf_squeezed":htf_sq,
                 })
                 in_trade_until = i + bars
-                ds = {}
+                cooldown_until = i + bars + 30
+                ds={}; fired=True
 
         wins   = [t for t in trades if t["pnl_pips"]>0]
         losses = [t for t in trades if t["pnl_pips"]<=0]
@@ -1153,7 +1267,6 @@ def backtest_diverge():
         avg_w  = sum(t["pnl_pips"] for t in wins)/len(wins) if wins else 0
         avg_l  = sum(t["pnl_pips"] for t in losses)/len(losses) if losses else 0
         pf     = abs(avg_w*len(wins)/(avg_l*len(losses))) if losses and avg_l!=0 else 999
-        sma_hit = len([t for t in trades if t.get("sma_retested")])/len(trades)*100 if trades else 0
 
         equity=[]; running=0
         for t in trades: running+=t["pnl_pips"]; equity.append(round(running,2))
@@ -1164,11 +1277,15 @@ def backtest_diverge():
             dd=peak-running2
             if dd>max_dd: max_dd=dd
 
+        sma_rate = len([t for t in trades if t.get("sma_retested")])/len(trades)*100 if trades else 0
+        htf_rate = len([t for t in trades if t.get("htf_squeezed")])/len(trades)*100 if trades else 0
+
         return jsonify({
             "ok":True,"pair":pair,"strategy":"DIVERGE","granularity":"M3",
             "candles_analyzed":len(candles),
             "params":{"bb_period":bb_period,"bb_entry":bb_entry,"rsi_period":rsi_period,
-                      "sl_buffer_pips":sl_buf,"sma_period":sma_period,"require_sma":require_sma},
+                      "sl_buffer_pips":sl_buf,"sma_period":sma_period,
+                      "require_sma":require_sma,"state_max_candles":state_max},
             "stats":{
                 "total_trades":len(trades),"wins":len(wins),"losses":len(losses),
                 "win_rate":round(wr,1),"total_pips":round(total,2),
@@ -1176,13 +1293,13 @@ def backtest_diverge():
                 "profit_factor":round(pf,2),"max_drawdown_pips":round(max_dd,2),
                 "tp1_hit_rate":round(len([t for t in trades if t["tp1_hit"]])/len(trades)*100,1) if trades else 0,
                 "tp2_hit_rate":round(len([t for t in trades if t["outcome"]=="tp2"])/len(trades)*100,1) if trades else 0,
-                "sma_retest_rate":round(sma_hit,1),
+                "sma_retest_rate":round(sma_rate,1),
+                "htf_squeezed_rate":round(htf_rate,1),
             },
             "equity":equity,"trades":trades,
         })
     except Exception as e:
         return jsonify({"ok":False,"error":str(e)}),500
-
 
 # ─── ORB BACKTEST ─────────────────────────────────────────────────────────────
 @app.route("/backtest/orb", methods=["GET"])
