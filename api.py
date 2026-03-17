@@ -548,8 +548,8 @@ def backtest_sharkfin():
         if len(candles) < bb_period + 50:
             return jsonify({"ok": False, "error": "Not enough candles"}), 400
 
-        # Fetch M5 candles for 5m confirmation
-        candles5 = bt_get_candles(pair, "M5", count)
+        # Fetch M5 candles — need 3x the count since M5 covers less time than M3
+        candles5 = bt_get_candles(pair, "M5", min(count * 2, 5000))
         _, _h5, _l5, c5, t5 = bt_candles_to_ohlc(candles5) if candles5 else ([],[],[],[],[])
         u25_5, _, l25_5 = bt_calc_bb(c5, bb_period, bb_dev25) if len(c5) > bb_period else ([],[],[])
         rsi5_vals = bt_calc_rsi_ewm(c5, rsi_period) if c5 else []
@@ -582,14 +582,30 @@ def backtest_sharkfin():
 
         def bt_5m_conf(direction, m3_time):
             if not c5 or not t5: return True
-            m5_idx = next((idx for idx, t in enumerate(t5) if t >= m3_time[:16]), None)
-            if m5_idx is None or m5_idx < bb_period + 5: return False
-            r5 = rsi5_vals[m5_idx] if m5_idx < len(rsi5_vals) else None
-            if r5 is None: return False
-            u5v = u25_5[m5_idx] if m5_idx < len(u25_5) else None
-            l5v = l25_5[m5_idx] if m5_idx < len(l25_5) else None
-            c5v = c5[m5_idx]
-            if bt_flare(c5[:m5_idx+1], bb_period, bb_dev30): return False
+            # Find closest M5 candle to the M3 signal time (within 10 min)
+            m3_ts = m3_time[:16]
+            best_idx = None
+            best_diff = 999
+            for idx, t in enumerate(t5):
+                # Compare time strings directly (both ISO format YYYY-MM-DDTHH:MM)
+                diff = abs(ord(t[11])*60 + ord(t[14]) - ord(m3_ts[11])*60 - ord(m3_ts[14]))
+                if t[:10] == m3_ts[:10] and diff < best_diff:
+                    best_diff = diff
+                    best_idx = idx
+            # Fall back to first M5 on same day if no close match
+            if best_idx is None:
+                for idx, t in enumerate(t5):
+                    if t[:10] == m3_ts[:10]:
+                        best_idx = idx
+                        break
+            if best_idx is None or best_idx < bb_period + 5:
+                return True  # no M5 data for this time — don't block the signal
+            r5 = rsi5_vals[best_idx] if best_idx < len(rsi5_vals) else None
+            if r5 is None: return True
+            u5v = u25_5[best_idx] if best_idx < len(u25_5) else None
+            l5v = l25_5[best_idx] if best_idx < len(l25_5) else None
+            c5v = c5[best_idx]
+            if bt_flare(c5[:best_idx+1], bb_period, bb_dev30): return False
             rsi5_ok   = (direction=="sell" and r5 > rsi_ob) or (direction=="buy" and r5 < rsi_os)
             price5_ok = (direction=="sell" and u5v and c5v >= u5v) or (direction=="buy" and l5v and c5v <= l5v)
             return rsi5_ok or price5_ok
