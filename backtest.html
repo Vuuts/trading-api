@@ -142,6 +142,8 @@
   <!-- Strategy selector -->
   <div class="strat-tabs">
     <button class="strat-btn active" data-strat="sharkfin">🦈 SHARKFIN</button>
+    <button class="strat-btn" data-strat="diverge">🔀 DIVERGE</button>
+    <button class="strat-btn" data-strat="orb">📦 ORB</button>
     <button class="strat-btn" data-strat="harmonic">🎵 HARMONIC</button>
   </div>
 
@@ -235,6 +237,27 @@ const CONFIGS = {
     { key:'min_pattern_bars',  label:'Min Pattern Bars',type:'number',default:30,   min:10,  max:100  },
     { key:'sl_buffer_pips',    label:'SL Buffer Pips', type:'number', default:5,    min:2,   max:20   },
     { key:'patterns',          label:'Patterns',       type:'select', options:['all','GARTLEY','BAT','BUTTERFLY','CRAB','SHARK','CYPHER'], default:'all' },
+  ],
+  diverge: [
+    { key:'pair',              label:'Pair',                type:'select', options:PAIRS, default:'EUR_USD' },
+    { key:'count',             label:'Candles (M3)',        type:'number', default:500,   min:200, max:2000 },
+    { key:'bb_period',         label:'BB Period',           type:'number', default:20,    min:10,  max:50   },
+    { key:'bb_entry',          label:'BB Dev (entry)',      type:'number', default:2.5,   min:1.5, max:4, step:0.1 },
+    { key:'rsi_period',        label:'RSI Period',          type:'number', default:14,    min:5,   max:30   },
+    { key:'sl_buffer_pips',    label:'SL Buffer Pips',      type:'number', default:13,    min:5,   max:30   },
+    { key:'sma_period',        label:'SMA Period',          type:'number', default:8,     min:3,   max:20   },
+    { key:'state_max_candles', label:'State Max (candles)', type:'number', default:60,    min:20,  max:200  },
+    { key:'require_sma',       label:'Require SMA retest',  type:'select', options:['false','true'], default:'false' },
+  ],
+  orb: [
+    { key:'pair',              label:'Pair',           type:'select', options:PAIRS, default:'EUR_USD' },
+    { key:'count',             label:'Candles (M5)',   type:'number', default:1000,  min:200, max:3000 },
+    { key:'box_candles',       label:'Box Candles',    type:'number', default:3,     min:1,   max:6    },
+    { key:'risk_reward',       label:'TP1 R:R',        type:'number', default:1.0,   min:0.5, max:3, step:0.5 },
+    { key:'ma_period',         label:'MA Period',      type:'number', default:50,    min:20,  max:200  },
+    { key:'min_box_pips',      label:'Min Box Pips',   type:'number', default:5,     min:2,   max:20   },
+    { key:'max_box_pips',      label:'Max Box Pips',   type:'number', default:50,    min:20,  max:100  },
+    { key:'session',           label:'Session',        type:'select', options:['both','ny','asia'], default:'both' },
   ],
 };
 
