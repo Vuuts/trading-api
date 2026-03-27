@@ -6,7 +6,7 @@ import requests
 import os
 from datetime import datetime, timezone
 
-SUPA_URL = os.environ.get("SUPABASE_URL", "https://myetabcvnbltfrupuod.supabase.co")
+SUPA_URL = os.environ.get("SUPABASE_URL", "https://myetabcvnbltfruppuod.supabase.co")
 SUPA_KEY = os.environ.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im15ZXRhYmN2bmJsdGZydXBwdW9kIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MjY0NDkwNiwiZXhwIjoyMDg4MjIwOTA2fQ.09Me5NQ-FVvm7w8JGvdNsZbJjHZtrS1EhS2BRb1KgAQ")
 
 HEADERS = {
