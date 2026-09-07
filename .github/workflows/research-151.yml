@@ -47,36 +47,10 @@ jobs:
               cost=to*(BPS/10000)
               return held*asset_ret-cost.shift(1).fillna(0),to
 
-          def sma1030(c):
-              f=c.rolling(10).mean(); s=c.rolling(30).mean()
+          def sma_pair(c,fast,slow):
+              f=c.rolling(fast).mean(); s=c.rolling(slow).mean()
               p=pd.Series(0.0,index=c.index)
               p[f>s]=1.; p[f<s]=-1.
-              return p
-
-          def sma31021(c):
-              m3=c.rolling(3).mean(); m10=c.rolling(10).mean(); m21=c.rolling(21).mean()
-              p=pd.Series(0.0,index=c.index); state=0.
-              for i in range(len(c)):
-                  if pd.isna(m21.iloc[i]):
-                      p.iloc[i]=0.; continue
-                  bull=m3.iloc[i]>m10.iloc[i]>m21.iloc[i]
-                  bear=m3.iloc[i]<m10.iloc[i]<m21.iloc[i]
-                  if state==1 and m3.iloc[i]<=m10.iloc[i]: state=0.
-                  elif state==-1 and m3.iloc[i]>=m10.iloc[i]: state=0.
-                  if state==0:
-                      if bull: state=1.
-                      elif bear: state=-1.
-                  p.iloc[i]=state
-              return p
-
-          def donchian_rev(c,n=20):
-              upper=c.shift(1).rolling(n).max(); lower=c.shift(1).rolling(n).min()
-              p=pd.Series(0.0,index=c.index); state=0.
-              for i in range(len(c)):
-                  if pd.isna(upper.iloc[i]): p.iloc[i]=state; continue
-                  if c.iloc[i]<=lower.iloc[i]: state=1.
-                  elif c.iloc[i]>=upper.iloc[i]: state=-1.
-                  p.iloc[i]=state
               return p
 
           spy=yf.download('SPY',start=START,end=END,auto_adjust=True,progress=False)
@@ -84,7 +58,11 @@ jobs:
           c=spy['Close']['SPY'] if isinstance(spy.columns,pd.MultiIndex) else spy['Close']
           print('DATA',c.index.min().date(),c.index.max().date(),len(c))
           rows=[]
-          tests={'SMA 10/30 long-short':sma1030(c),'SMA 3/10/21 state':sma31021(c),'Donchian-20 reversal':donchian_rev(c)}
+          tests={
+              'SMA 10/30 long-short':sma_pair(c,10,30),
+              'SMA 10/50 long-short':sma_pair(c,10,50),
+              'SMA 9/50 long-short':sma_pair(c,9,50),
+          }
           r=c.pct_change()
           bhp=pd.Series(1.,index=c.index); bhr,bhto=apply_costs(r,bhp)
           for name,p in tests.items():
@@ -92,28 +70,11 @@ jobs:
               for period,mask in [('FULL',c.index>=c.index.min()),('IS',c.index<pd.Timestamp(OOS)),('OOS',c.index>=pd.Timestamp(OOS))]:
                   idx=c.index[mask]
                   rows.append({'strategy':name,'period':period,**metrics(sr.reindex(idx),p.reindex(idx),to.reindex(idx))})
-              # buy-hold once only after final strategy to avoid duplicates
           for period,mask in [('FULL',c.index>=c.index.min()),('IS',c.index<pd.Timestamp(OOS)),('OOS',c.index>=pd.Timestamp(OOS))]:
               idx=c.index[mask]
               rows.append({'strategy':'SPY buy&hold','period':period,**metrics(bhr.reindex(idx),bhp.reindex(idx),bhto.reindex(idx))})
 
-          sector=['XLB','XLC','XLE','XLF','XLI','XLK','XLP','XLRE','XLU','XLV','XLY']
-          px=yf.download(sector,start=START,end=END,auto_adjust=True,progress=False)
-          hi=px['High']; lo=px['Low']; cl=px['Close']
-          ibs=(cl-lo)/(hi-lo).replace(0,np.nan)
-          w=pd.DataFrame(0.,index=cl.index,columns=cl.columns)
-          for dt,row in ibs.dropna(how='any').iterrows():
-              a=row.idxmin(); b=row.idxmax(); w.loc[dt,a]=.5; w.loc[dt,b]=-.5
-          rets=cl.pct_change(); held=w.shift(1).fillna(0)
-          to=w.diff().abs().sum(axis=1).fillna(w.abs().sum(axis=1))
-          net=(held*rets).sum(axis=1)-to.shift(1).fillna(0)*BPS/10000
-          exp=w.abs().sum(axis=1)
-          for period,mask in [('FULL',net.index>=net.index.min()),('IS',net.index<pd.Timestamp(OOS)),('OOS',net.index>=pd.Timestamp(OOS))]:
-              idx=net.index[mask]
-              rows.append({'strategy':'ETF IBS sector long-short','period':period,**metrics(net.reindex(idx),exp.reindex(idx),to.reindex(idx))})
-
           out=pd.DataFrame(rows)
-          pd.set_option('display.max_columns',None); pd.set_option('display.width',220)
           print('\nRESULTS_BEGIN')
           print(out.to_csv(index=False,float_format='%.6f'))
           print('RESULTS_END')
