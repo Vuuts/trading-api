@@ -12,7 +12,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install --quiet yfinance pandas numpy
-      - name: Run frozen-rule backtest
+      - name: Run EMA comparison backtest
         shell: bash
         run: |
           cat > /tmp/backtest.py <<'PY'
@@ -28,11 +28,8 @@ jobs:
           END='2026-09-05'
 
           def metrics(ret,pos,to):
-              x=ret.dropna()
-              eq=(1+x).cumprod()
-              yrs=len(x)/TD
-              total=eq.iloc[-1]-1
-              cagr=eq.iloc[-1]**(1/yrs)-1
+              x=ret.dropna(); eq=(1+x).cumprod(); yrs=len(x)/TD
+              total=eq.iloc[-1]-1; cagr=eq.iloc[-1]**(1/yrs)-1
               vol=x.std(ddof=1)*math.sqrt(TD)
               sharpe=x.mean()/x.std(ddof=1)*math.sqrt(TD) if x.std(ddof=1)>0 else np.nan
               dd=(eq/eq.cummax()-1).min()
@@ -47,8 +44,11 @@ jobs:
               cost=to*(BPS/10000)
               return held*asset_ret-cost.shift(1).fillna(0),to
 
-          def sma_pair(c,fast,slow):
-              f=c.rolling(fast).mean(); s=c.rolling(slow).mean()
+          def pair(c,fast,slow,kind):
+              if kind=='EMA':
+                  f=c.ewm(span=fast,adjust=False).mean(); s=c.ewm(span=slow,adjust=False).mean()
+              else:
+                  f=c.rolling(fast).mean(); s=c.rolling(slow).mean()
               p=pd.Series(0.0,index=c.index)
               p[f>s]=1.; p[f<s]=-1.
               return p
@@ -57,13 +57,13 @@ jobs:
           if spy.empty: raise SystemExit('NO SPY DATA')
           c=spy['Close']['SPY'] if isinstance(spy.columns,pd.MultiIndex) else spy['Close']
           print('DATA',c.index.min().date(),c.index.max().date(),len(c))
-          rows=[]
           tests={
-              'SMA 10/30 long-short':sma_pair(c,10,30),
-              'SMA 10/50 long-short':sma_pair(c,10,50),
-              'SMA 9/50 long-short':sma_pair(c,9,50),
+              'SMA 9/50 long-short':pair(c,9,50,'SMA'),
+              'EMA 9/50 long-short':pair(c,9,50,'EMA'),
+              'EMA 10/50 long-short':pair(c,10,50,'EMA'),
+              'EMA 9/30 long-short':pair(c,9,30,'EMA'),
           }
-          r=c.pct_change()
+          r=c.pct_change(); rows=[]
           bhp=pd.Series(1.,index=c.index); bhr,bhto=apply_costs(r,bhp)
           for name,p in tests.items():
               sr,to=apply_costs(r,p)
@@ -73,7 +73,6 @@ jobs:
           for period,mask in [('FULL',c.index>=c.index.min()),('IS',c.index<pd.Timestamp(OOS)),('OOS',c.index>=pd.Timestamp(OOS))]:
               idx=c.index[mask]
               rows.append({'strategy':'SPY buy&hold','period':period,**metrics(bhr.reindex(idx),bhp.reindex(idx),bhto.reindex(idx))})
-
           out=pd.DataFrame(rows)
           print('\nRESULTS_BEGIN')
           print(out.to_csv(index=False,float_format='%.6f'))
