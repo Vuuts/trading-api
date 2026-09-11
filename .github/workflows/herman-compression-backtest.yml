@@ -1,0 +1,193 @@
+name: Herman compression regime backtest
+
+on:
+  push:
+    branches:
+      - research/herman-compression-backtest-20260911
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Run Herman proxy backtest
+        shell: bash
+        run: |
+          python -m pip install --quiet pandas numpy
+          python - <<'PY'
+          import io, json, math, urllib.request, zipfile
+          import numpy as np
+          import pandas as pd
+
+          URL = 'https://raw.githubusercontent.com/lvrusu/QQQ_price_data/main/1_2_19_to_1_11_24_1minute_compressed_dataset.csv.zip'
+          with urllib.request.urlopen(URL, timeout=120) as r:
+              raw = r.read()
+          z = zipfile.ZipFile(io.BytesIO(raw))
+          csv_names = [n for n in z.namelist() if n.lower().endswith('.csv')]
+          if not csv_names:
+              raise RuntimeError(f'No CSV in archive: {z.namelist()}')
+          with z.open(csv_names[0]) as f:
+              df = pd.read_csv(f)
+
+          # Normalize column names from the public QQQ dataset.
+          cmap = {str(c).strip().lower(): c for c in df.columns}
+          tcol = next((cmap[k] for k in ['ds','datetime','date_time','timestamp','time'] if k in cmap), None)
+          if tcol is None:
+              raise RuntimeError(f'No timestamp column. Columns={list(df.columns)}')
+          ocol = next((cmap[k] for k in ['open'] if k in cmap), None)
+          hcol = next((cmap[k] for k in ['high'] if k in cmap), None)
+          lcol = next((cmap[k] for k in ['low'] if k in cmap), None)
+          ccol = next((cmap[k] for k in ['close'] if k in cmap), None)
+          if None in (ocol,hcol,lcol,ccol):
+              raise RuntimeError(f'Missing OHLC. Columns={list(df.columns)}')
+
+          x = df[[tcol,ocol,hcol,lcol,ccol]].copy()
+          x.columns = ['ts','open','high','low','close']
+          x['ts'] = pd.to_datetime(x['ts'], errors='coerce')
+          for c in ['open','high','low','close']:
+              x[c] = pd.to_numeric(x[c], errors='coerce')
+          x = x.dropna().drop_duplicates('ts').sort_values('ts').set_index('ts')
+
+          # Public source timestamps are US/Eastern-local naive timestamps.
+          # Use RTH only to make the QQQ proxy deterministic and comparable to the regime classifier.
+          x = x.between_time('09:30','15:59').copy()
+          print('DATA', x.index.min(), x.index.max(), len(x), 'archive', csv_names[0])
+
+          def prep(data, timeframe):
+              if timeframe == '1m':
+                  b = data.copy()
+              elif timeframe == '5m':
+                  # Resample separately per session so bars never bridge overnight.
+                  parts=[]
+                  for d,g in data.groupby(data.index.date):
+                      r = g.resample('5min', origin='start_day', offset='30min').agg(
+                          {'open':'first','high':'max','low':'min','close':'last'}).dropna()
+                      parts.append(r)
+                  b = pd.concat(parts).sort_index()
+              else:
+                  raise ValueError(timeframe)
+              b['sma50'] = b['close'].rolling(50, min_periods=50).mean()
+              b['sma200'] = b['close'].rolling(200, min_periods=200).mean()
+              b['prev_close'] = b['close'].shift(1)
+              b['prev_sma50'] = b['sma50'].shift(1)
+              return b
+
+          DATA = {'1m': prep(x,'1m'), '5m': prep(x,'5m')}
+
+          windows = {
+              'Jan2020_quiet': ('2020-01-02','2020-01-31','calm'),
+              'Jun2021_compression': ('2021-06-01','2021-06-30','calm'),
+              'May2022_expansion': ('2022-05-02','2022-05-31','expansion'),
+              'Feb2024_quiet': ('2024-02-20','2024-02-29','calm'),
+              'May2024_quiet': ('2024-05-01','2024-05-31','calm'),
+              'Jul2024_transition': ('2024-07-01','2024-07-31','transition'),
+              'Aug2024_shock': ('2024-08-01','2024-08-09','expansion'),
+          }
+
+          variants = {
+              'loose': {'sep':0.0012,'stop':0.0050},
+              'primary': {'sep':0.0015,'stop':0.00625},
+              'strict': {'sep':0.0018,'stop':0.0075},
+          }
+          roundtrip_cost = 0.0004  # 4 bps round trip; explicit QQQ proxy friction.
+
+          def date_mask(idx, start, end):
+              s=pd.Timestamp(start); e=pd.Timestamp(end)+pd.Timedelta(days=1)
+              return (idx>=s)&(idx<e)
+
+          def run_strategy(bars, start, end, sep, stop_pct):
+              m = date_mask(bars.index,start,end)
+              inds = np.flatnonzero(m)
+              if len(inds)==0:
+                  return []
+              lo,hi = inds[0], inds[-1]
+              trades=[]; pos=0; entry=np.nan; entry_i=-1; entry_ts=None
+              skip_entry_i=-1
+              for i in range(lo,hi+1):
+                  row=bars.iloc[i]
+                  ts=bars.index[i]
+                  # Exit open trade first. Pine's order-on-close entry is not eligible for same-bar exit here.
+                  if pos != 0 and i > entry_i:
+                      stop = entry*(1-stop_pct) if pos==1 else entry*(1+stop_pct)
+                      target = float(row.sma200) if pd.notna(row.sma200) else np.nan
+                      exit_px=None; reason=None
+                      if pos==1:
+                          if row.low <= stop:
+                              exit_px=stop; reason='stop'
+                          elif pd.notna(target) and row.high >= target and target >= row.low:
+                              exit_px=target; reason='sma200'
+                      else:
+                          if row.high >= stop:
+                              exit_px=stop; reason='stop'
+                          elif pd.notna(target) and row.low <= target and target <= row.high:
+                              exit_px=target; reason='sma200'
+                      # Force flat on last RTH bar of the date to avoid unmodelled ETF overnight fills.
+                      next_date = bars.index[i+1].date() if i < len(bars)-1 else None
+                      if exit_px is None and (next_date is None or next_date != ts.date() or i==hi):
+                          exit_px=float(row.close); reason='eod'
+                      if exit_px is not None:
+                          gross = pos*(exit_px-entry)/entry
+                          net = gross-roundtrip_cost
+                          trades.append({'entry_ts':str(entry_ts),'exit_ts':str(ts),'dir':pos,
+                                         'entry':entry,'exit':exit_px,'ret':net,'gross':gross,'reason':reason})
+                          pos=0; entry=np.nan; entry_i=-1; entry_ts=None; skip_entry_i=i
+                  if pos != 0 or i==skip_entry_i:
+                      continue
+                  if any(pd.isna(v) for v in [row.sma50,row.sma200,row.prev_close,row.prev_sma50]):
+                      continue
+                  separated = abs(row.sma50-row.sma200)/row.close >= sep
+                  if not separated:
+                      continue
+                  cross_up = row.close > row.sma50 and row.prev_close <= row.prev_sma50
+                  cross_dn = row.close < row.sma50 and row.prev_close >= row.prev_sma50
+                  if cross_up and row.sma50 < row.sma200:
+                      pos=1; entry=float(row.close); entry_i=i; entry_ts=ts
+                  elif cross_dn and row.sma50 > row.sma200:
+                      pos=-1; entry=float(row.close); entry_i=i; entry_ts=ts
+              return trades
+
+          def metrics(trades):
+              if not trades:
+                  return {'trades':0,'win_rate':None,'pf':None,'return_pct':0.0,'max_dd_pct':0.0,'expectancy_bp':None}
+              r=np.array([t['ret'] for t in trades],dtype=float)
+              wins=r[r>0]; losses=r[r<0]
+              pf=float(wins.sum()/abs(losses.sum())) if len(losses) and losses.sum()!=0 else float('inf')
+              equity=np.cumprod(1+r)
+              peak=np.maximum.accumulate(np.r_[1.0,equity])
+              eq=np.r_[1.0,equity]
+              dd=(eq/peak)-1
+              return {'trades':len(r), 'win_rate':float((r>0).mean()*100),
+                      'pf':pf, 'return_pct':float((equity[-1]-1)*100),
+                      'max_dd_pct':float(-dd.min()*100), 'expectancy_bp':float(r.mean()*10000)}
+
+          def bh_return(bars,start,end):
+              s=bars.loc[date_mask(bars.index,start,end)]
+              if s.empty: return None
+              return float((s.iloc[-1].close/s.iloc[0].open-1)*100)
+
+          results=[]
+          all_trades={}
+          for tf,bars in DATA.items():
+              for vname,v in variants.items():
+                  stitched={'calm':[],'transition':[],'expansion':[]}
+                  for wname,(start,end,regime) in windows.items():
+                      tr=run_strategy(bars,start,end,v['sep'],v['stop'])
+                      met=metrics(tr)
+                      out={'timeframe':tf,'variant':vname,'window':wname,'regime':regime,
+                           **met,'bh_pct':bh_return(bars,start,end)}
+                      results.append(out)
+                      stitched[regime].extend(tr)
+                  for regime,tr in stitched.items():
+                      met=metrics(tr)
+                      results.append({'timeframe':tf,'variant':vname,'window':'POOLED_'+regime.upper(),
+                                      'regime':regime,**met,'bh_pct':None})
+
+          # Also calculate primary 1m stitched buy-and-hold return across the disjoint calm windows.
+          for out in results:
+              if out['timeframe']=='1m' and out['variant']=='primary':
+                  print('RESULT', json.dumps(out, sort_keys=True, allow_nan=True))
+          print('--- SENSITIVITY POOLED ---')
+          for out in results:
+              if out['window'].startswith('POOLED_'):
+                  print('POOL', json.dumps(out, sort_keys=True, allow_nan=True))
+          PY
