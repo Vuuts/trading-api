@@ -1,34 +1,45 @@
 import json
 import urllib.request
-from collections import defaultdict
-
 import numpy as np
 import pandas as pd
 
 DATA_URL = "https://raw.githubusercontent.com/lvrusu/QQQ_price_data/main/QQQ5m_regular_raw_1_2018_to_9_30_24.csv"
 DATA_PATH = "/tmp/qqq5m.csv"
-ROUNDTRIP_COST = 0.0004  # 4 bps QQQ proxy friction
-BASE_SEP = 0.0015        # proportional proxy for Herman's 30-point separation
-BASE_STOP = 0.00625      # proportional proxy for Herman's 125-point stop
+COST = 0.0004
+SEP = 0.0015
+STOP_PCT = 0.00625
 
 
-def load_data():
+def metrics(rets):
+    r = np.asarray(rets, float)
+    if not len(r):
+        return {"trades": 0, "win_rate": None, "pf": None, "return_pct": 0.0,
+                "max_dd_pct": 0.0, "expectancy_bp": None}
+    w, l = r[r > 0].sum(), r[r < 0].sum()
+    pf = float(w / abs(l)) if l < 0 else float("inf")
+    eq = np.r_[1.0, np.cumprod(1.0 + r)]
+    peak = np.maximum.accumulate(eq)
+    return {"trades": int(len(r)), "win_rate": float((r > 0).mean() * 100), "pf": pf,
+            "return_pct": float((eq[-1] - 1) * 100),
+            "max_dd_pct": float(-(eq / peak - 1).min() * 100),
+            "expectancy_bp": float(r.mean() * 10000)}
+
+
+def emit(tag, **payload):
+    print(tag, json.dumps(payload, sort_keys=True, allow_nan=True))
+
+
+def load():
     urllib.request.urlretrieve(DATA_URL, DATA_PATH)
-    df = pd.read_csv(DATA_PATH)
-    cmap = {str(c).strip().lower(): c for c in df.columns}
-    tcol = next((cmap[k] for k in ["date_time", "datetime", "timestamp", "time", "ds"] if k in cmap), None)
-    if tcol is None:
-        raise RuntimeError(f"No timestamp column: {list(df.columns)}")
-    for k in ["open", "high", "low", "close"]:
-        if k not in cmap:
-            raise RuntimeError(f"Missing {k}: {list(df.columns)}")
-    x = df[[tcol, cmap["open"], cmap["high"], cmap["low"], cmap["close"]]].copy()
+    raw = pd.read_csv(DATA_PATH)
+    cmap = {str(c).strip().lower(): c for c in raw.columns}
+    tcol = next(cmap[k] for k in ["date_time", "datetime", "timestamp", "time", "ds"] if k in cmap)
+    x = raw[[tcol, cmap["open"], cmap["high"], cmap["low"], cmap["close"]]].copy()
     x.columns = ["ts", "open", "high", "low", "close"]
-    x["ts"] = pd.to_datetime(x["ts"], errors="coerce")
+    x.ts = pd.to_datetime(x.ts, errors="coerce")
     for c in ["open", "high", "low", "close"]:
         x[c] = pd.to_numeric(x[c], errors="coerce")
-    x = x.dropna().drop_duplicates("ts").sort_values("ts").set_index("ts")
-    x = x.between_time("09:30", "15:59").copy()
+    x = x.dropna().drop_duplicates("ts").sort_values("ts").set_index("ts").between_time("09:30", "15:59").copy()
     x["sma50"] = x.close.rolling(50, min_periods=50).mean()
     x["sma200"] = x.close.rolling(200, min_periods=200).mean()
     x["prev_close"] = x.close.shift(1)
@@ -36,264 +47,170 @@ def load_data():
     return x
 
 
-def build_session_regimes(x):
-    rows = []
-    for day, g in x.groupby(x.index.date):
-        first = g.between_time("09:30", "10:25")
-        if first.empty:
-            continue
-        first_open = float(first.iloc[0].open)
-        fh_range = float((first.high.max() - first.low.min()) / first_open)
-        rows.append((pd.Timestamp(day), fh_range))
-    s = pd.DataFrame(rows, columns=["day", "first_hour_range"]).set_index("day").sort_index()
-    # Past-only regime context: median of the prior 10 completed sessions.
-    s["prior10_med"] = s.first_hour_range.shift(1).rolling(10, min_periods=10).median()
-    # Two deployable gates. Both become known at 10:30 ET.
-    s["trailing_compression"] = s.prior10_med <= 0.008
-    s["same_day_compression"] = s.trailing_compression & (s.first_hour_range <= 0.008)
-    return s
-
-
-def metrics(rets):
-    r = np.asarray(rets, dtype=float)
-    if len(r) == 0:
-        return dict(trades=0, win_rate=None, pf=None, return_pct=0.0, max_dd_pct=0.0, expectancy_bp=None)
-    wins = r[r > 0].sum()
-    losses = r[r < 0].sum()
-    pf = float(wins / abs(losses)) if losses < 0 else float("inf")
-    eq = np.r_[1.0, np.cumprod(1.0 + r)]
-    peak = np.maximum.accumulate(eq)
-    dd = eq / peak - 1.0
-    return dict(
-        trades=int(len(r)),
-        win_rate=float((r > 0).mean() * 100.0),
-        pf=pf,
-        return_pct=float((eq[-1] - 1.0) * 100.0),
-        max_dd_pct=float(-dd.min() * 100.0),
-        expectancy_bp=float(r.mean() * 10000.0),
-    )
-
-
-def bh_on_days(x, eligible_days):
-    # Stitched buy-and-hold benchmark for only the eligible sessions: buy session open, sell session close.
-    wealth = 1.0
-    count = 0
-    for day in sorted(eligible_days):
-        g = x[x.index.date == day]
-        if g.empty:
-            continue
-        wealth *= float(g.iloc[-1].close / g.iloc[0].open)
-        count += 1
-    return float((wealth - 1.0) * 100.0), count
-
-
-def run_strategy(x, regimes, gate_name, displacement=None, fail_lookback=None, max_wait=None,
-                 start=None, end=None, eod_flat=False):
-    """Run base Herman when displacement is None; otherwise require D->F->R before the Herman entry."""
-    rets = []
-    records = []
-    pos = 0
-    entry = None
-    entry_i = -1
-    entry_ts = None
-    entry_dir = 0
-    skip_i = -1
-
-    state_day = None
-    disp_long = False
-    disp_short = False
-    fail_long_i = None
-    fail_short_i = None
-
-    idx = x.index
-    start_ts = pd.Timestamp(start) if start else idx.min()
-    end_ts = pd.Timestamp(end) + pd.Timedelta(days=1) if end else idx.max() + pd.Timedelta(minutes=5)
-
-    for i in range(len(x)):
-        ts = idx[i]
-        if ts < start_ts or ts >= end_ts:
-            continue
-        row = x.iloc[i]
-        day = ts.date()
-
-        if state_day != day:
-            state_day = day
-            disp_long = disp_short = False
-            fail_long_i = fail_short_i = None
-
-        day_key = pd.Timestamp(day)
-        eligible = day_key in regimes.index and bool(regimes.loc[day_key, gate_name]) and ts.time() >= pd.Timestamp("10:30").time()
-
-        # Manage an existing position regardless of whether the regime gate later changes.
-        if pos != 0 and i > entry_i:
-            stop = entry * (1.0 - BASE_STOP) if pos == 1 else entry * (1.0 + BASE_STOP)
-            target = float(row.sma200) if pd.notna(row.sma200) else np.nan
-            exit_px = None
-            reason = None
-            if pos == 1:
-                if row.low <= stop:
-                    exit_px, reason = stop, "stop"
-                elif pd.notna(target) and row.low <= target <= row.high:
-                    exit_px, reason = target, "sma200"
-            else:
-                if row.high >= stop:
-                    exit_px, reason = stop, "stop"
-                elif pd.notna(target) and row.low <= target <= row.high:
-                    exit_px, reason = target, "sma200"
-
-            next_day = idx[i + 1].date() if i < len(x) - 1 else None
-            if eod_flat and exit_px is None and next_day != day:
-                exit_px, reason = float(row.close), "eod"
-
-            if exit_px is not None:
-                gross = entry_dir * (exit_px - entry) / entry
-                net = gross - ROUNDTRIP_COST
-                rets.append(net)
-                records.append(dict(entry_ts=str(entry_ts), exit_ts=str(ts), direction=entry_dir,
-                                    entry=entry, exit=exit_px, gross=gross, ret=net, reason=reason))
-                pos = 0
-                entry = None
-                entry_i = -1
-                entry_ts = None
-                entry_dir = 0
-                skip_i = i
-
-        if pos != 0 or i == skip_i or not eligible:
-            continue
-        if any(pd.isna(v) for v in [row.sma50, row.sma200, row.prev_close, row.prev_sma50]):
-            continue
-
-        # Herman's own separation gate.
-        if abs(row.sma50 - row.sma200) / row.close < BASE_SEP:
-            continue
-
-        cross_up = row.close > row.sma50 and row.prev_close <= row.prev_sma50
-        cross_dn = row.close < row.sma50 and row.prev_close >= row.prev_sma50
-
-        if displacement is not None:
-            # Step 1: displacement away from the dynamic 200-SMA balance point.
-            dist200 = abs(row.close - row.sma200) / row.sma200
-            if row.sma50 < row.sma200 and row.close < row.sma50 and dist200 >= displacement:
-                disp_long = True
-            if row.sma50 > row.sma200 and row.close > row.sma50 and dist200 >= displacement:
-                disp_short = True
-
-            # Step 2: continuation attempt fails. Break a prior L-bar extreme intrabar, close back inside it.
-            if fail_lookback is not None and i >= fail_lookback:
-                prior = x.iloc[i - fail_lookback:i]
-                if disp_long and row.sma50 < row.sma200:
-                    prior_low = float(prior.low.min())
-                    if row.low < prior_low and row.close > prior_low:
-                        fail_long_i = i
-                if disp_short and row.sma50 > row.sma200:
-                    prior_high = float(prior.high.max())
-                    if row.high > prior_high and row.close < prior_high:
-                        fail_short_i = i
-
-            # Expire failed-continuation permission if rotation takes too long.
-            if fail_long_i is not None and i - fail_long_i > max_wait:
-                fail_long_i = None
-                disp_long = False
-            if fail_short_i is not None and i - fail_short_i > max_wait:
-                fail_short_i = None
-                disp_short = False
-
-        # Step 3: original Herman rotation cross. Filtered version requires prior D->F state.
-        long_ok = cross_up and row.sma50 < row.sma200
-        short_ok = cross_dn and row.sma50 > row.sma200
-        if displacement is not None:
-            long_ok = long_ok and fail_long_i is not None and 0 <= i - fail_long_i <= max_wait
-            short_ok = short_ok and fail_short_i is not None and 0 <= i - fail_short_i <= max_wait
-
-        if long_ok:
-            pos, entry, entry_i, entry_ts, entry_dir = 1, float(row.close), i, ts, 1
-            disp_long = False
-            fail_long_i = None
-        elif short_ok:
-            pos, entry, entry_i, entry_ts, entry_dir = -1, float(row.close), i, ts, -1
-            disp_short = False
-            fail_short_i = None
-
-    # Close an open trade at the final available close so every run has realized P&L.
-    if pos != 0:
-        final_i = np.flatnonzero((idx >= start_ts) & (idx < end_ts))[-1]
-        final_row = x.iloc[final_i]
-        final_ts = idx[final_i]
-        gross = entry_dir * (float(final_row.close) - entry) / entry
-        net = gross - ROUNDTRIP_COST
-        rets.append(net)
-        records.append(dict(entry_ts=str(entry_ts), exit_ts=str(final_ts), direction=entry_dir,
-                            entry=entry, exit=float(final_row.close), gross=gross, ret=net, reason="period_end"))
-    return rets, records
-
-
-def print_result(tag, **kwargs):
-    print(tag, json.dumps(kwargs, sort_keys=True, allow_nan=True))
-
-
 def main():
-    x = load_data()
-    regimes = build_session_regimes(x)
-    print("DATA", x.index.min(), x.index.max(), len(x), "sessions", len(regimes))
-    print("REGIME_COUNTS", json.dumps({
-        "trailing_compression": int(regimes.trailing_compression.sum()),
-        "same_day_compression": int(regimes.same_day_compression.sum()),
-    }))
+    x = load()
+    n = len(x)
+    idx = x.index
+    dates = np.array(idx.date)
+    tm = np.array(idx.time)
+    op, hi, lo, cl = (x[c].to_numpy(float) for c in ["open", "high", "low", "close"])
+    s50, s200 = x.sma50.to_numpy(float), x.sma200.to_numpy(float)
+    pc, ps50 = x.prev_close.to_numpy(float), x.prev_sma50.to_numpy(float)
 
-    # Non-optimized, pre-fixed hypothesis test.
-    fixed = dict(displacement=0.004, fail_lookback=5, max_wait=12)
-    for gate in ["trailing_compression", "same_day_compression"]:
-        eligible_days = set(regimes.index[regimes[gate]].date)
-        bh_ret, bh_days = bh_on_days(x, eligible_days)
-        base_rets, _ = run_strategy(x, regimes, gate)
-        filt_rets, filt_records = run_strategy(x, regimes, gate, **fixed)
-        print_result("BASE", gate=gate, **metrics(base_rets), bh_pct=bh_ret, bh_days=bh_days)
-        print_result("FIXED_DFR", gate=gate, **fixed, **metrics(filt_rets), bh_pct=bh_ret, bh_days=bh_days)
+    # Session boundaries and deployable compression state.
+    unique_days, day_first, day_counts = np.unique(dates, return_index=True, return_counts=True)
+    day_last = day_first + day_counts - 1
+    day_to_ord = {d: k for k, d in enumerate(unique_days)}
+    day_ord = np.array([day_to_ord[d] for d in dates], dtype=int)
+    fh = np.full(len(unique_days), np.nan)
+    for k, (a, b) in enumerate(zip(day_first, day_last)):
+        # 12 five-minute bars: 09:30 through 10:25.
+        z = min(a + 11, b)
+        fh[k] = (np.max(hi[a:z + 1]) - np.min(lo[a:z + 1])) / op[a]
+    prior10 = pd.Series(fh).shift(1).rolling(10, min_periods=10).median().to_numpy()
+    trailing_day = prior10 <= 0.008
+    sameday_day = trailing_day & (fh <= 0.008)
+    trailing_bar = trailing_day[day_ord]
+    sameday_bar = sameday_day[day_ord]
+    after1030 = np.array([(t.hour > 10) or (t.hour == 10 and t.minute >= 30) for t in tm])
 
-        # June 2021 exact historical check under the same past-only regime gate.
-        june_rets, _ = run_strategy(x, regimes, gate, start="2021-06-01", end="2021-06-30", **fixed)
-        june_base, _ = run_strategy(x, regimes, gate, start="2021-06-01", end="2021-06-30")
-        print_result("JUNE2021_BASE", gate=gate, **metrics(june_base))
-        print_result("JUNE2021_FIXED_DFR", gate=gate, **fixed, **metrics(june_rets))
+    valid = np.isfinite(s50) & np.isfinite(s200) & np.isfinite(pc) & np.isfinite(ps50)
+    sepok = np.abs(s50 - s200) / cl >= SEP
+    cross_up = valid & (cl > s50) & (pc <= ps50) & (s50 < s200) & sepok
+    cross_dn = valid & (cl < s50) & (pc >= ps50) & (s50 > s200) & sepok
+    direction = np.zeros(n, dtype=np.int8)
+    direction[cross_up] = 1
+    direction[cross_dn] = -1
+    signal_idx = np.flatnonzero(direction)
 
-    # Train/OOS sensitivity sweep. Select on 2018-2021 only; 2022-2024 is untouched OOS.
-    gate = "same_day_compression"
+    # Precompute outcome for every raw Herman signal once. Conservative same-bar rule: stop before target.
+    outcome_exit = np.full(n, -1, dtype=int)
+    outcome_ret = np.full(n, np.nan)
+    for i in signal_idx:
+        d = int(direction[i]); entry = cl[i]
+        stop = entry * (1 - STOP_PCT) if d == 1 else entry * (1 + STOP_PCT)
+        exit_i = n - 1; exit_px = cl[-1]
+        for j in range(i + 1, n):
+            target = s200[j]
+            if d == 1:
+                if lo[j] <= stop:
+                    exit_i, exit_px = j, stop; break
+                if np.isfinite(target) and lo[j] <= target <= hi[j]:
+                    exit_i, exit_px = j, target; break
+            else:
+                if hi[j] >= stop:
+                    exit_i, exit_px = j, stop; break
+                if np.isfinite(target) and lo[j] <= target <= hi[j]:
+                    exit_i, exit_px = j, target; break
+        outcome_exit[i] = exit_i
+        outcome_ret[i] = d * (exit_px - entry) / entry - COST
+
+    # Max qualifying displacement seen so far in the current session, by direction.
+    dist200 = np.abs(cl - s200) / s200
+    long_disp_val = np.where(valid & (s50 < s200) & (cl < s50), dist200, -np.inf)
+    short_disp_val = np.where(valid & (s50 > s200) & (cl > s50), dist200, -np.inf)
+    max_long_disp = np.full(n, -np.inf)
+    max_short_disp = np.full(n, -np.inf)
+    for a, b in zip(day_first, day_last):
+        max_long_disp[a:b + 1] = np.maximum.accumulate(long_disp_val[a:b + 1])
+        max_short_disp[a:b + 1] = np.maximum.accumulate(short_disp_val[a:b + 1])
+
+    # Failed continuation arrays: take prior L-bar extreme, break it intrabar, close back inside.
+    fail_long = {}
+    fail_short = {}
+    for lb in [3, 5, 8]:
+        fl = np.zeros(n, bool); fs = np.zeros(n, bool)
+        for a, b in zip(day_first, day_last):
+            for j in range(a + lb, b + 1):
+                plow = np.min(lo[j - lb:j]); phigh = np.max(hi[j - lb:j])
+                fl[j] = (s50[j] < s200[j]) and (lo[j] < plow) and (cl[j] > plow)
+                fs[j] = (s50[j] > s200[j]) and (hi[j] > phigh) and (cl[j] < phigh)
+        fail_long[lb], fail_short[lb] = fl, fs
+
+    def dfr_mask(disp, lb, wait):
+        out = np.zeros(n, bool)
+        fl, fs = fail_long[lb], fail_short[lb]
+        for i in signal_idx:
+            a = day_first[day_ord[i]]
+            j0 = max(a, i - wait)
+            if direction[i] == 1:
+                js = np.flatnonzero(fl[j0:i + 1]) + j0
+                if len(js) and np.any(max_long_disp[js] >= disp): out[i] = True
+            else:
+                js = np.flatnonzero(fs[j0:i + 1]) + j0
+                if len(js) and np.any(max_short_disp[js] >= disp): out[i] = True
+        return out
+
+    def simulate(allowed, start=None, end=None):
+        a = 0 if start is None else int(np.searchsorted(idx.values, np.datetime64(start), side="left"))
+        end_dt = idx[-1] + pd.Timedelta(minutes=5) if end is None else pd.Timestamp(end) + pd.Timedelta(days=1)
+        b = int(np.searchsorted(idx.values, np.datetime64(end_dt), side="left")) - 1
+        if b < a: return []
+        rets = []
+        last_exit = a - 1
+        for i in signal_idx:
+            if i < a or i > b or not allowed[i] or i <= last_exit: continue
+            ei = outcome_exit[i]
+            if ei <= b:
+                rets.append(float(outcome_ret[i])); last_exit = ei
+            else:
+                d = int(direction[i]); rets.append(float(d * (cl[b] - cl[i]) / cl[i] - COST)); last_exit = b
+        return rets
+
+    def bh_for_gate(day_gate):
+        wealth = 1.0; count = 0
+        for k, ok in enumerate(day_gate):
+            if not ok: continue
+            a, b = day_first[k], day_last[k]
+            wealth *= cl[b] / op[a]; count += 1
+        return float((wealth - 1) * 100), count
+
+    print("DATA", idx.min(), idx.max(), n, "sessions", len(unique_days), "raw_signals", len(signal_idx))
+    print("REGIME_COUNTS", json.dumps({"trailing": int(trailing_day.sum()), "same_day": int(sameday_day.sum())}))
+
+    fixed = (0.004, 5, 12)
+    fixed_mask = dfr_mask(*fixed)
+    for gate_name, gate_bar, gate_day in [("trailing_compression", trailing_bar, trailing_day),
+                                         ("same_day_compression", sameday_bar, sameday_day)]:
+        base_allowed = gate_bar & after1030 & (direction != 0)
+        filt_allowed = base_allowed & fixed_mask
+        bh, bh_days = bh_for_gate(gate_day)
+        emit("BASE", gate=gate_name, **metrics(simulate(base_allowed)), bh_pct=bh, bh_days=bh_days)
+        emit("FIXED_DFR", gate=gate_name, displacement=fixed[0], fail_lookback=fixed[1], max_wait=fixed[2],
+             **metrics(simulate(filt_allowed)), bh_pct=bh, bh_days=bh_days)
+        emit("JUNE2021_BASE", gate=gate_name, **metrics(simulate(base_allowed, "2021-06-01", "2021-06-30")))
+        emit("JUNE2021_FIXED_DFR", gate=gate_name, displacement=fixed[0], fail_lookback=fixed[1], max_wait=fixed[2],
+             **metrics(simulate(filt_allowed, "2021-06-01", "2021-06-30")))
+
+    # Train-only selection, then untouched 2022-2024 OOS evaluation.
+    base_gate = sameday_bar & after1030 & (direction != 0)
     grid = []
-    for d in [0.0025, 0.0030, 0.0035, 0.0040, 0.0045, 0.0050, 0.0060]:
+    for disp in [0.0025, 0.0030, 0.0035, 0.0040, 0.0045, 0.0050, 0.0060]:
         for lb in [3, 5, 8]:
             for wait in [6, 12, 18]:
-                train, _ = run_strategy(x, regimes, gate, displacement=d, fail_lookback=lb, max_wait=wait,
-                                        start="2018-01-01", end="2021-12-31")
-                test, _ = run_strategy(x, regimes, gate, displacement=d, fail_lookback=lb, max_wait=wait,
-                                       start="2022-01-01", end="2024-09-27")
-                mt, ms = metrics(train), metrics(test)
-                grid.append(dict(d=d, lb=lb, wait=wait, train=mt, test=ms))
+                allowed = base_gate & dfr_mask(disp, lb, wait)
+                train = metrics(simulate(allowed, "2018-01-01", "2021-12-31"))
+                oos = metrics(simulate(allowed, "2022-01-01", "2024-09-27"))
+                grid.append({"disp": disp, "lb": lb, "wait": wait, "train": train, "oos": oos, "allowed": allowed})
 
-    # Predeclare minimum train sample; rank only on train PF with a small sample penalty via expectancy tie-break.
     candidates = [g for g in grid if g["train"]["trades"] >= 30 and g["train"]["pf"] is not None]
     candidates.sort(key=lambda g: (g["train"]["pf"], g["train"]["expectancy_bp"]), reverse=True)
     best = candidates[0] if candidates else max(grid, key=lambda g: g["train"]["trades"])
-    d, lb, wait = best["d"], best["lb"], best["wait"]
-    full, _ = run_strategy(x, regimes, gate, displacement=d, fail_lookback=lb, max_wait=wait)
-    print_result("TRAIN_SELECTED", displacement=d, fail_lookback=lb, max_wait=wait,
-                 train=best["train"], oos=best["test"], full=metrics(full))
+    full = metrics(simulate(best["allowed"]))
+    emit("TRAIN_SELECTED", displacement=best["disp"], fail_lookback=best["lb"], max_wait=best["wait"],
+         train=best["train"], oos=best["oos"], full=full)
 
-    # Robustness neighborhood: summarize how many grid points clear key PF thresholds OOS.
-    valid_oos = [g for g in grid if g["test"]["trades"] >= 15 and g["test"]["pf"] is not None]
-    summary = {
-        "grid_points": len(grid),
-        "valid_oos_points": len(valid_oos),
-        "oos_pf_ge_1_0": sum(g["test"]["pf"] >= 1.0 for g in valid_oos),
-        "oos_pf_ge_1_25": sum(g["test"]["pf"] >= 1.25 for g in valid_oos),
-        "oos_pf_ge_1_5": sum(g["test"]["pf"] >= 1.5 for g in valid_oos),
-        "oos_positive_expectancy": sum(g["test"]["expectancy_bp"] > 0 for g in valid_oos),
-    }
-    print("GRID_SUMMARY", json.dumps(summary, sort_keys=True))
-
-    # Print top 5 train-selected rows with their OOS results to expose instability/robustness.
+    valid = [g for g in grid if g["oos"]["trades"] >= 15 and g["oos"]["pf"] is not None]
+    print("GRID_SUMMARY", json.dumps({
+        "grid_points": len(grid), "valid_oos_points": len(valid),
+        "oos_pf_ge_1_0": sum(g["oos"]["pf"] >= 1.0 for g in valid),
+        "oos_pf_ge_1_25": sum(g["oos"]["pf"] >= 1.25 for g in valid),
+        "oos_pf_ge_1_5": sum(g["oos"]["pf"] >= 1.5 for g in valid),
+        "oos_positive_expectancy": sum(g["oos"]["expectancy_bp"] > 0 for g in valid)
+    }, sort_keys=True))
     for rank, g in enumerate(candidates[:5], 1):
-        print_result("TOP_TRAIN", rank=rank, displacement=g["d"], fail_lookback=g["lb"], max_wait=g["wait"],
-                     train=g["train"], oos=g["test"])
+        emit("TOP_TRAIN", rank=rank, displacement=g["disp"], fail_lookback=g["lb"], max_wait=g["wait"],
+             train=g["train"], oos=g["oos"])
 
 
 if __name__ == "__main__":
